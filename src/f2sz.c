@@ -393,7 +393,7 @@ int main(int argc, char **argv) {
   char *executable = argv[0];
 
   int ch;
-  while ((ch = getopt(argc, argv, "l:o:s:S:T:rjVfvh")) != -1) {
+  while ((ch = getopt(argc, argv, "l:o:s:T:jVfvh")) != -1) {
     switch (ch) {
     case 'l':
       ctx->level = atoi(optarg);

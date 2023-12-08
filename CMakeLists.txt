@@ -14,7 +14,7 @@ if (CMAKE_C_BYTE_ORDER STREQUAL BIG_ENDIAN)
   add_compile_definitions(F2SZ_BIG_ENDIAN=1)
 endif()
 
-add_executable(f2sz src/f2sz.c)
+add_executable(f2sz src/f2sz.c src/utils.c)
 target_link_libraries(f2sz zstd::libzstd_shared m)
 
 if (CMAKE_BUILD_TYPE STREQUAL Release)

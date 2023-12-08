@@ -19,6 +19,8 @@
 #include <unistd.h>
 #include <zstd.h>
 
+#include "utils.h"
+
 typedef struct SeekTableEntry SeekTableEntry;
 
 struct SeekTableEntry {
@@ -359,32 +361,6 @@ static void usage(const char *name, const char *str) {
           name);
   version();
   exit(0);
-}
-
-static bool strEndsWith(const char *str, const char *suf) {
-  size_t strLen = strlen(str);
-  size_t sufLen = strlen(suf);
-
-  return (strLen >= sufLen) && (0 == strcmp(str + (strLen - sufLen), suf));
-}
-
-static size_t decodeMultiplier(char *arg) {
-  size_t multiplier = 1;
-  if (strEndsWith(arg, "k") || strEndsWith(arg, "K") ||
-      strEndsWith(arg, "KiB")) {
-    multiplier = 1024;
-  } else if (strEndsWith(arg, "M") || strEndsWith(arg, "MiB")) {
-    multiplier = 1024 * 1024;
-  } else if (strEndsWith(arg, "G") || strEndsWith(arg, "GiB")) {
-    multiplier = 1024 * 1024 * 1024;
-  } else if (strEndsWith(arg, "kB") || strEndsWith(arg, "KB")) {
-    multiplier = 1000;
-  } else if (strEndsWith(arg, "MB")) {
-    multiplier = 1000 * 1000;
-  } else if (strEndsWith(arg, "GB")) {
-    multiplier = 1000 * 1000 * 1000;
-  }
-  return multiplier;
 }
 
 int main(int argc, char **argv) {

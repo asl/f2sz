@@ -54,19 +54,14 @@ typedef struct {
   bool skipSeekTable;
 } Context;
 
-bool isLittleEndian() {
-  volatile int x = 1;
-  return *(char *)(&x) == 1;
-}
-
 void writeLE32(void *dst, uint32_t data) {
-  if (isLittleEndian()) {
-    memcpy(dst, &data, sizeof(data));
-  } else {
+#if defined(F2SZ_BIG_ENDIAN)
     uint32_t swap = ((data & 0xFF000000) >> 24) | ((data & 0x00FF0000) >> 8) |
                     ((data & 0x0000FF00) << 8) | ((data & 0x000000FF) << 24);
     memcpy(dst, &swap, sizeof(swap));
-  }
+#else
+    memcpy(dst, &data, sizeof(data));
+#endif
 }
 
 void writeSeekTable(Context *ctx) {

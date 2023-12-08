@@ -333,7 +333,7 @@ static void usage(const char *name, const char *str) {
           "\t-l [1..22]         Set compression level, from 1 (lower) to 22 "
           "(highest). Default is 3.\n"
           "\t-o FILENAME        Output file name.\n"
-          "\t-s SIZE            In raw mode: the exact size of each input "
+          "\t-b SIZE            In raw mode: the exact size of each input "
           "block, except the last one.\n"
           "\t                   The greater is SIZE the smaller will be the "
           "archive at the expense of the seek speed.\n"
@@ -369,7 +369,7 @@ int main(int argc, char **argv) {
   char *executable = argv[0];
 
   int ch;
-  while ((ch = getopt(argc, argv, "l:o:s:T:jVfvh")) != -1) {
+  while ((ch = getopt(argc, argv, "l:o:b:T:jVfvh")) != -1) {
     switch (ch) {
     case 'l':
       ctx->level = atoi(optarg);
@@ -380,7 +380,7 @@ int main(int argc, char **argv) {
     case 'o':
       ctx->outFilename = optarg;
       break;
-    case 's': {
+    case 'b': {
       size_t multiplier = decodeMultiplier(optarg);
       ctx->minBlockSize = atoi(optarg) * multiplier;
       if (ctx->minBlockSize < multiplier) {

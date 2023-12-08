@@ -54,7 +54,7 @@ typedef struct {
   bool skipSeekTable;
 } Context;
 
-void writeLE32(void *dst, uint32_t data) {
+static void writeLE32(void *dst, uint32_t data) {
 #if defined(F2SZ_BIG_ENDIAN)
     uint32_t swap = ((data & 0xFF000000) >> 24) | ((data & 0x00FF0000) >> 8) |
                     ((data & 0x0000FF00) << 8) | ((data & 0x000000FF) << 24);
@@ -64,7 +64,7 @@ void writeLE32(void *dst, uint32_t data) {
 #endif
 }
 
-void writeSeekTable(Context *ctx) {
+static void writeSeekTable(Context *ctx) {
   uint8_t buf[4];
   
   // Skippable_Magic_Number
@@ -90,9 +90,8 @@ void writeSeekTable(Context *ctx) {
     writeLE32(buf, e->decompressedSize);
     fwrite(buf, 4, 1, ctx->outFile);
 
-    if (ctx->verbose) {
+    if (ctx->verbose)
       fprintf(stderr, "%u\t%u\n", e->decompressedSize, e->compressedSize);
-    }
   }
 
   // Seek_Table_Footer
@@ -109,8 +108,8 @@ void writeSeekTable(Context *ctx) {
   fwrite(buf, 4, 1, ctx->outFile);
 }
 
-SeekTableEntry *newSeekTableEntry(uint32_t compressedSize,
-                                  uint32_t decompressedSize) {
+static SeekTableEntry *newSeekTableEntry(uint32_t compressedSize,
+                                         uint32_t decompressedSize) {
   SeekTableEntry *e = malloc(sizeof(SeekTableEntry));
   memset(e, 0, sizeof(SeekTableEntry));
   e->compressedSize = compressedSize;
@@ -118,8 +117,8 @@ SeekTableEntry *newSeekTableEntry(uint32_t compressedSize,
   return e;
 }
 
-void seekTableAdd(Context *ctx, uint64_t compressedSize,
-                  uint64_t decompressedSize) {
+static void seekTableAdd(Context *ctx, uint64_t compressedSize,
+                         uint64_t decompressedSize) {
   if (ctx->skipSeekTable)
     return;
 
@@ -150,14 +149,14 @@ void seekTableAdd(Context *ctx, uint64_t compressedSize,
   }
 }
 
-Context *newContext() {
+static Context *newContext() {
   Context *ctx = malloc(sizeof(Context));
   memset(ctx, 0, sizeof(Context));
   ctx->level = 3;
   return ctx;
 }
 
-void prepareInput(Context *ctx) {
+static void prepareInput(Context *ctx) {
   int fd = open(ctx->inFilename, O_RDONLY, 0);
   if (fd < 0) {
     fprintf(stderr, "ERROR: Unable to open '%s'\n", ctx->inFilename);
@@ -174,7 +173,7 @@ void prepareInput(Context *ctx) {
   close(fd);
 }
 
-void prepareOutput(Context *ctx) {
+static void prepareOutput(Context *ctx) {
   ctx->outFile = fopen(ctx->outFilename, "wb");
   if (!ctx->outFile) {
     fprintf(stderr, "ERROR: Cannot open output file for writing\n");
@@ -184,7 +183,7 @@ void prepareOutput(Context *ctx) {
   ctx->outBuff = malloc(ctx->outBuffSize);
 }
 
-void prepareCctx(Context *ctx) {
+static void prepareCctx(Context *ctx) {
   ctx->cctx = ZSTD_createCCtx();
   if (ctx->cctx == NULL) {
     fprintf(stderr, "ERROR: Cannot create ZSTD CCtx\n");
@@ -218,7 +217,7 @@ void prepareCctx(Context *ctx) {
   }
 }
 
-void compressFile(Context *ctx) {
+static void compressFile(Context *ctx) {
   prepareInput(ctx);
 
   prepareOutput(ctx);
@@ -293,7 +292,7 @@ static char *getOutFilename(const char *inFilename) {
   return (char *)buff;
 }
 
-void version() {
+static void version() {
   fprintf(
       stderr,
       "f2sz version %s\n"
@@ -304,10 +303,9 @@ void version() {
       VERSION);
 }
 
-void usage(const char *name, const char *str) {
-  if (str) {
+static void usage(const char *name, const char *str) {
+  if (str)
     fprintf(stderr, "%s\n\n", str);
-  }
 
   fprintf(stderr,
           "f2sz: FASTA 2 seekable zstd.\n"
@@ -363,14 +361,14 @@ void usage(const char *name, const char *str) {
   exit(0);
 }
 
-bool strEndsWith(const char *str, const char *suf) {
+static bool strEndsWith(const char *str, const char *suf) {
   size_t strLen = strlen(str);
   size_t sufLen = strlen(suf);
 
   return (strLen >= sufLen) && (0 == strcmp(str + (strLen - sufLen), suf));
 }
 
-size_t decodeMultiplier(char *arg) {
+static size_t decodeMultiplier(char *arg) {
   size_t multiplier = 1;
   if (strEndsWith(arg, "k") || strEndsWith(arg, "K") ||
       strEndsWith(arg, "KiB")) {

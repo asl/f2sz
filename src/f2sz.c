@@ -224,12 +224,16 @@ typedef struct {
     size_t size;
 } Block;
 
+static void roundBlockToInput(Block *block, const Context *ctx) {
+    if (block->buf + block->size > ctx->inBuff + ctx->inBuffSize)
+        block->size = ctx->inBuff + ctx->inBuffSize - block->buf;
+}
+
 static bool nextBlock(Block *block, const Context *ctx) {
     if (block->buf == NULL) { // Very first block, determine appropriate block size
         block->buf = ctx->inBuff;
         block->size = ctx->minBlockSize ? ctx->minBlockSize : ctx->inBuffSize;
-        if (block->buf + block->size > ctx->inBuff + ctx->inBuffSize)
-            block->size = ctx->inBuff + ctx->inBuffSize - block->buf;
+        roundBlockToInput(block, ctx);
     } else { // Advance the block pointer
         // Case 1: current block is the last one
         if (block->buf + block->size >= ctx->inBuff + ctx->inBuffSize)
@@ -238,8 +242,7 @@ static bool nextBlock(Block *block, const Context *ctx) {
         // Case 2: really advance the block pointer
         block->buf += block->size;
         block->size = ctx->minBlockSize ? ctx->minBlockSize : ctx->inBuffSize;
-        if (block->buf + block->size > ctx->inBuff + ctx->inBuffSize)
-            block->size = ctx->inBuff + ctx->inBuffSize - block->buf;
+        roundBlockToInput(block, ctx);
     }
 
     return true;

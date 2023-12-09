@@ -30,30 +30,30 @@ struct SeekTableEntry {
 };
 
 typedef struct {
-  // input parameters
-  const char *inFilename;
-  char *outFilename;
-  uint8_t level;
-  size_t minBlockSize;
-  bool verbose;
-  uint32_t workers;
+    // input parameters
+    const char *inFilename;
+    char *outFilename;
+    uint8_t level;
+    size_t minBlockSize;
+    bool verbose;
+    uint32_t workers;
 
-  // input buffer
-  size_t inBuffSize;
-  uint8_t *inBuff;
+    // input buffer
+    size_t inBuffSize;
+    uint8_t *inBuff;
 
-  // output buffer
-  FILE *outFile;
-  size_t outBuffSize;
-  void *outBuff;
+    // output buffer
+    FILE *outFile;
+    size_t outBuffSize;
+    void *outBuff;
 
-  // compression context
-  ZSTD_CCtx *cctx;
+    // compression context
+    ZSTD_CCtx *cctx;
 
-  // seek table
-  SeekTableEntry *seekTable;
-  uint32_t numberOfFrames;
-  bool skipSeekTable;
+    // seek table
+    SeekTableEntry *seekTable;
+    uint32_t numberOfFrames;
+    bool skipSeekTable;
 } Context;
 
 static void writeLE32(void *dst, uint32_t data) {
@@ -68,7 +68,7 @@ static void writeLE32(void *dst, uint32_t data) {
 
 static void writeSeekTable(Context *ctx) {
   uint8_t buf[4];
-  
+
   // Skippable_Magic_Number
   writeLE32(buf, ZSTD_MAGIC_SKIPPABLE_START | 0xE);
   fwrite(buf, 4, 1, ctx->outFile);
@@ -219,70 +219,76 @@ static void prepareCctx(Context *ctx) {
   }
 }
 
+typedef struct {
+    uint8_t *buf;
+    size_t size;
+} Block;
+
+static bool nextBlock(Block *block, const Context *ctx) {
+    if (block->buf == NULL) { // Very first block, determine appropriate block size
+        block->buf = ctx->inBuff;
+        block->size = ctx->minBlockSize ? ctx->minBlockSize : ctx->inBuffSize;
+        if (block->buf + block->size > ctx->inBuff + ctx->inBuffSize)
+            block->size = ctx->inBuff + ctx->inBuffSize - block->buf;
+    } else { // Advance the block pointer
+        // Case 1: current block is the last one
+        if (block->buf + block->size >= ctx->inBuff + ctx->inBuffSize)
+            return false;
+
+        // Case 2: really advance the block pointer
+        block->buf += block->size;
+        block->size = ctx->minBlockSize ? ctx->minBlockSize : ctx->inBuffSize;
+        if (block->buf + block->size > ctx->inBuff + ctx->inBuffSize)
+            block->size = ctx->inBuff + ctx->inBuffSize - block->buf;
+    }
+
+    return true;
+}
+
 static void compressFile(Context *ctx) {
-  prepareInput(ctx);
+    prepareInput(ctx);
+    prepareOutput(ctx);
+    prepareCctx(ctx);
 
-  prepareOutput(ctx);
+    Block block = { NULL, 0 };
+    while (nextBlock(&block, ctx)) {
+        ZSTD_CCtx_setPledgedSrcSize(ctx->cctx, block.size);
 
-  prepareCctx(ctx);
+        if (ctx->verbose)
+            fprintf(stderr, "# END OF BLOCK (%lu)\n\n", block.size);
 
-  size_t tarHeaderIdx = 0;
-  uint8_t *readBuff = ctx->inBuff;
+        // Sanity check
+        if (block.buf + block.size > ctx->inBuff + ctx->inBuffSize) {
+            fprintf(stderr, "FATAL ERROR: This is a bug. Please, report it.\n");
+            exit(-1);
+        }
 
-  bool lastChunk = false;
-  size_t residual = 0;
-  while (!lastChunk) {
-    size_t blockSize = 0;
+        ZSTD_inBuffer input = { block.buf, block.size, 0};
+        size_t remaining;
+        mode_t mode;
+        uint64_t compressedSize = 0;
+        do {
+            ZSTD_outBuffer output = {ctx->outBuff, ctx->outBuffSize, 0};
+            mode = input.pos < input.size ? ZSTD_e_continue : ZSTD_e_end;
+            remaining = ZSTD_compressStream2(ctx->cctx, &output, &input, mode);
+            if (ZSTD_isError(remaining)) {
+                fprintf(stderr, "ERROR: Can't compress stream: %s\n",
+                        ZSTD_getErrorName(remaining));
+                exit(1);
+            }
+            compressedSize += fwrite(ctx->outBuff, 1, output.pos, ctx->outFile);
+        } while (mode == ZSTD_e_continue || remaining > 0);
 
-    if (ctx->minBlockSize) {
-      blockSize = ctx->minBlockSize;
-      if (readBuff + blockSize > ctx->inBuff + ctx->inBuffSize) {
-        blockSize = ctx->inBuff + ctx->inBuffSize - readBuff;
-        lastChunk = true;
-      }
-    } else {
-      blockSize = ctx->inBuffSize;
-      lastChunk = true;
+        seekTableAdd(ctx, compressedSize, block.size);
     }
 
-    ZSTD_CCtx_setPledgedSrcSize(ctx->cctx, blockSize);
-    if (ctx->verbose) {
-      fprintf(stderr, "# END OF BLOCK (%lu, %lu)\n\n", blockSize, tarHeaderIdx);
-    }
+    if (!ctx->skipSeekTable)
+        writeSeekTable(ctx);
 
-    if (readBuff + blockSize > ctx->inBuff + ctx->inBuffSize) {
-      fprintf(stderr, "FATAL ERROR: This is a bug. Please, report it.\n");
-      exit(-1);
-    }
-
-    ZSTD_inBuffer input = {readBuff, blockSize, 0};
-    size_t remaining;
-    mode_t mode;
-    uint64_t compressedSize = 0;
-    do {
-      ZSTD_outBuffer output = {ctx->outBuff, ctx->outBuffSize, 0};
-      mode = input.pos < input.size ? ZSTD_e_continue : ZSTD_e_end;
-      remaining = ZSTD_compressStream2(ctx->cctx, &output, &input, mode);
-      if (ZSTD_isError(remaining)) {
-        fprintf(stderr, "ERROR: Can't compress stream: %s\n",
-                ZSTD_getErrorName(remaining));
-        exit(1);
-      }
-      compressedSize += fwrite(ctx->outBuff, 1, output.pos, ctx->outFile);
-    } while (mode == ZSTD_e_continue || remaining > 0);
-
-    seekTableAdd(ctx, compressedSize, blockSize);
-
-    readBuff += blockSize;
-  }
-
-  if (!ctx->skipSeekTable)
-    writeSeekTable(ctx);
-
-  ZSTD_freeCCtx(ctx->cctx);
-  fclose(ctx->outFile);
-  free(ctx->outBuff);
-  munmap(ctx->inBuff, ctx->inBuffSize);
+    ZSTD_freeCCtx(ctx->cctx);
+    fclose(ctx->outFile);
+    free(ctx->outBuff);
+    munmap(ctx->inBuff, ctx->inBuffSize);
 }
 
 static char *getOutFilename(const char *inFilename) {

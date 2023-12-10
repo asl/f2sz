@@ -265,11 +265,51 @@ static void advanceBlock(Block *block, Context *ctx) {
                 // whole chunk
                 block->size += remaining;
                 break;
-            } else {
-                // Advance over newline
-                block->size = pos - block->buf + 1;
-                ctx->entities += 1;
             }
+
+            // Advance over newline
+            block->size = pos - block->buf + 1;
+            ctx->entities += 1;
+        }
+
+        break;
+    }
+    case FASTA: {
+        if (!ctx->minBlockSize) {
+            block->size = ctx->inBuffSize;
+            break;
+        }
+
+        block->size = 0;
+        while (block->size < ctx->minBlockSize) {
+            // End of input buffer
+            if (block->buf + block->size >= ctx->inBuff + ctx->inBuffSize)
+                break;
+
+            // Advance over input buffer, we know there is at least 1 byte to check
+            size_t remaining = ctx->inBuff + ctx->inBuffSize - block->buf - block->size;
+            // Find FASTA header. Usually it should be just current symbol
+            uint8_t *hpos = memchr(block->buf + block->size, '>', remaining);
+            if (hpos == NULL) {
+                // No more FASTA headers until the end of the input buffer, grab the
+                // whole chunk
+                block->size += remaining;
+                break;
+            }
+
+            // Find the next header, if any
+            remaining = ctx->inBuff + ctx->inBuffSize - hpos;
+            uint8_t *hpos_next = memchr(hpos + 1, '>', remaining - 1);
+            if (hpos_next == NULL) {
+                // No more FASTA headers until the end of the input buffer, grab the
+                // whole chunk
+                block->size += remaining;
+                break;
+            }
+
+            // Align block to '>' position
+            block->size = hpos_next - block->buf;
+            ctx->entities += 1;
         }
 
         break;

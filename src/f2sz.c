@@ -29,6 +29,12 @@ struct SeekTableEntry {
   SeekTableEntry *next;
 };
 
+typedef enum {
+    Raw = 0,
+    Line,
+    FASTA
+} Mode;
+
 typedef struct {
     // input parameters
     const char *inFilename;
@@ -37,10 +43,12 @@ typedef struct {
     size_t minBlockSize;
     bool verbose;
     uint32_t workers;
+    Mode mode;
 
     // input buffer
     size_t inBuffSize;
     uint8_t *inBuff;
+    size_t entities;
 
     // output buffer
     FILE *outFile;
@@ -229,11 +237,52 @@ static void roundBlockToInput(Block *block, const Context *ctx) {
         block->size = ctx->inBuff + ctx->inBuffSize - block->buf;
 }
 
-static bool nextBlock(Block *block, const Context *ctx) {
+static void advanceBlock(Block *block, Context *ctx) {
+    switch (ctx->mode) {
+    default:
+    case Raw:
+        block->size = ctx->minBlockSize ? ctx->minBlockSize : ctx->inBuffSize;
+        ctx->entities += 1;
+        break;
+    case Line: {
+        if (!ctx->minBlockSize) {
+            block->size = ctx->inBuffSize;
+            break;
+        }
+
+        block->size = 0;
+        while (block->size < ctx->minBlockSize) {
+            // End of input buffer
+            if (block->buf + block->size >= ctx->inBuff + ctx->inBuffSize)
+                break;
+
+            // Advance over input buffer counting lines, we know there is at
+            // least 1 byte to check
+            size_t remaining = ctx->inBuff + ctx->inBuffSize - block->buf - block->size;
+            uint8_t *pos = memchr(block->buf + block->size, '\n', remaining);
+            if (pos == NULL) {
+                // No more newlines until the end of the input buffer, grab the
+                // whole chunk
+                block->size += remaining;
+                break;
+            } else {
+                // Advance over newline
+                block->size = pos - block->buf + 1;
+                ctx->entities += 1;
+            }
+        }
+
+        break;
+    }
+    }
+
+    roundBlockToInput(block, ctx);
+}
+
+static bool nextBlock(Block *block, Context *ctx) {
     if (block->buf == NULL) { // Very first block, determine appropriate block size
         block->buf = ctx->inBuff;
-        block->size = ctx->minBlockSize ? ctx->minBlockSize : ctx->inBuffSize;
-        roundBlockToInput(block, ctx);
+        advanceBlock(block, ctx);
     } else { // Advance the block pointer
         // Case 1: current block is the last one
         if (block->buf + block->size >= ctx->inBuff + ctx->inBuffSize)
@@ -241,8 +290,7 @@ static bool nextBlock(Block *block, const Context *ctx) {
 
         // Case 2: really advance the block pointer
         block->buf += block->size;
-        block->size = ctx->minBlockSize ? ctx->minBlockSize : ctx->inBuffSize;
-        roundBlockToInput(block, ctx);
+        advanceBlock(block, ctx);
     }
 
     return true;
@@ -258,7 +306,7 @@ static void compressFile(Context *ctx) {
         ZSTD_CCtx_setPledgedSrcSize(ctx->cctx, block.size);
 
         if (ctx->verbose)
-            fprintf(stderr, "# END OF BLOCK (%lu)\n\n", block.size);
+            fprintf(stderr, "# END OF BLOCK (%zu, %zu)\n\n", block.size, ctx->entities);
 
         // Sanity check
         if (block.buf + block.size > ctx->inBuff + ctx->inBuffSize) {
@@ -378,7 +426,7 @@ int main(int argc, char **argv) {
   char *executable = argv[0];
 
   int ch;
-  while ((ch = getopt(argc, argv, "l:o:b:T:jVfvh")) != -1) {
+  while ((ch = getopt(argc, argv, "l:o:b:T:LFjVfvh")) != -1) {
     switch (ch) {
     case 'l':
       ctx->level = atoi(optarg);
@@ -406,6 +454,12 @@ int main(int argc, char **argv) {
       break;
     case 'j':
       ctx->skipSeekTable = true;
+      break;
+    case 'L':
+      ctx->mode = Line;
+      break;
+    case 'F':
+      ctx->mode = FASTA;
       break;
     case 'v':
       ctx->verbose = true;

@@ -9,7 +9,6 @@
 
 #include <fcntl.h>
 #include <getopt.h>
-#include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -29,6 +28,19 @@ struct SeekTableEntry {
   SeekTableEntry *next;
 };
 
+typedef struct {
+  char *str;
+  size_t len;
+} StringRef;
+
+typedef struct IndexEntry IndexEntry;
+struct IndexEntry {
+  StringRef name;
+  size_t idx;
+  size_t offset;
+  IndexEntry *next;
+};
+
 typedef enum {
     Raw = 0,
     Line,
@@ -39,6 +51,7 @@ typedef struct {
     // input parameters
     const char *inFilename;
     char *outFilename;
+    char *idxFilename;
     uint8_t level;
     size_t minBlockSize;
     bool verbose;
@@ -54,6 +67,11 @@ typedef struct {
     FILE *outFile;
     size_t outBuffSize;
     void *outBuff;
+
+    // output index
+    IndexEntry *index;
+    FILE *outIndex;
+    bool doIndex;
 
     // compression context
     ZSTD_CCtx *cctx;
@@ -166,6 +184,48 @@ static Context *newContext() {
   return ctx;
 }
 
+static void writeIndex(Context *ctx) {
+    char buf[sizeof(size_t)*8+1];
+
+    for (IndexEntry *e = ctx->index; e; e = e->next) {
+        if (e->name.str) {
+            fwrite(e->name.str, e->name.len, 1, ctx->outIndex);
+            fputc('\t', ctx->outIndex);
+        }
+
+        fprintf(ctx->outIndex,"%zu", e->idx);
+        fputc('\t', ctx->outIndex);
+        fprintf(ctx->outIndex, "%zu\n", e->offset);
+    }
+}
+
+static IndexEntry *newIndexEntry(StringRef name,
+                                 size_t idx,
+                                 size_t offset) {
+  IndexEntry *e = malloc(sizeof(IndexEntry));
+  memset(e, 0, sizeof(IndexEntry));
+  e->name = name;
+  e->idx = idx;
+  e->offset = offset;
+  return e;
+}
+
+static void indexAdd(Context *ctx,
+                     StringRef name, size_t idx, size_t offset) {
+    if (!ctx->doIndex)
+        return;
+
+    if (!ctx->index) {
+        ctx->index = newIndexEntry(name, idx, offset);
+    } else {
+        IndexEntry *e = ctx->index;
+        for (; e->next; e = e->next)
+            ;
+
+        e->next = newIndexEntry(name, idx, offset);
+    }
+}
+
 static void prepareInput(Context *ctx) {
   int fd = open(ctx->inFilename, O_RDONLY, 0);
   if (fd < 0) {
@@ -188,6 +248,14 @@ static void prepareOutput(Context *ctx) {
   if (!ctx->outFile) {
     fprintf(stderr, "ERROR: Cannot open output file for writing\n");
     exit(1);
+  }
+
+  if (ctx->doIndex) {
+    ctx->outIndex = fopen(ctx->idxFilename, "wt");
+    if (!ctx->outIndex) {
+      fprintf(stderr, "ERROR: Cannot open index file for writing\n");
+      exit(1);
+    }
   }
   ctx->outBuffSize = ZSTD_CStreamOutSize();
   ctx->outBuff = malloc(ctx->outBuffSize);
@@ -270,6 +338,7 @@ static void advanceBlock(Block *block, Context *ctx) {
             break;
         }
 
+        size_t lineNo = ctx->entities;
         block->size = 0;
         while (block->size < ctx->minBlockSize) {
             // End of input buffer
@@ -289,6 +358,9 @@ static void advanceBlock(Block *block, Context *ctx) {
             ctx->entities += 1;
         }
 
+        StringRef dummy = { NULL, 0};
+        indexAdd(ctx, dummy, lineNo, block->buf - ctx->inBuff);
+
         break;
     }
     case FASTA: {
@@ -296,6 +368,9 @@ static void advanceBlock(Block *block, Context *ctx) {
             block->size = ctx->inBuffSize;
             break;
         }
+
+        size_t seqNo = ctx->entities;
+        StringRef name = { NULL, 0 };
 
         block->size = 0;
         while (block->size < ctx->minBlockSize) {
@@ -313,8 +388,28 @@ static void advanceBlock(Block *block, Context *ctx) {
             if (hpos == NULL)
                 break;
 
-            // Find the next header, if any
+            // Advance over '>'
             block->size += 1;
+
+            // See if we need to record the name of the sequence
+            if (name.str == NULL) {
+                uint8_t *eol = advanceUntil(block, ctx, '\n');
+                // No more newlines until EOF - likely malformed entry
+                // but we'd simply grab the whole chunk then
+                if (eol == NULL)
+                    break;
+
+                // See if there is a comment here
+                size_t hlen = eol - hpos - 1;
+                uint8_t *space = memchr(hpos, ' ', hlen);
+                if (space != NULL)
+                    hlen = space - hpos - 1;
+
+                name.str = (char*)hpos + 1;
+                name.len = hlen;
+            }
+
+            // Find the next header, if any
             uint8_t *hpos_next = advanceUntil(block, ctx, '>');
 
             // No more FASTA headers until the end of the input buffer, grab the
@@ -326,6 +421,9 @@ static void advanceBlock(Block *block, Context *ctx) {
             // the newline
             ctx->entities += 1;
         }
+
+        if (name.str)
+            indexAdd(ctx, name, seqNo, block->buf - ctx->inBuff);
 
         break;
     }
@@ -357,11 +455,15 @@ static void compressFile(Context *ctx) {
     prepareCctx(ctx);
 
     Block block = { NULL, 0 };
+    size_t records = 0;
     while (nextBlock(&block, ctx)) {
         ZSTD_CCtx_setPledgedSrcSize(ctx->cctx, block.size);
 
-        if (ctx->verbose)
-            fprintf(stderr, "# END OF BLOCK (%zu, %zu)\n\n", block.size, ctx->entities);
+        if (ctx->verbose) {
+            fprintf(stderr, "# END OF BLOCK (%zu, %zu, %zu)\n\n",
+                    block.size, ctx->entities, ctx->entities - records);
+            records = ctx->entities;
+        }
 
         // Sanity check
         if (block.buf + block.size > ctx->inBuff + ctx->inBuffSize) {
@@ -390,20 +492,27 @@ static void compressFile(Context *ctx) {
 
     if (!ctx->skipSeekTable)
         writeSeekTable(ctx);
+    if (ctx->doIndex)
+        writeIndex(ctx);
 
     ZSTD_freeCCtx(ctx->cctx);
     fclose(ctx->outFile);
+    if (ctx->doIndex)
+        fclose(ctx->outIndex);
     free(ctx->outBuff);
     munmap(ctx->inBuff, ctx->inBuffSize);
 }
 
 static char *getOutFilename(const char *inFilename) {
-  const size_t size = strlen(inFilename) + 5;
-  void *const buff = malloc(size);
-  memset(buff, 0, size);
-  strcat(buff, inFilename);
+  char *buff = strdup(inFilename);
   strcat(buff, ".zst");
-  return (char *)buff;
+  return buff;
+}
+
+static char *getIndexFilename(const char *outFilename) {
+  char *buff = strdup(outFilename);
+  strcat(buff, ".idx");
+  return buff;
 }
 
 static void version() {
@@ -466,6 +575,7 @@ static void usage(const char *name, const char *str) {
           "version compiled with ZSTD_MULTITHREAD.\n"
           "\t                   If `-b` is too small it is possible "
           "that a lower number of threads will be used.\n"
+          "\t-i                 Generate index table for blocks.\n"
           "\t-j                 Do not generate a seek table.\n"
           "\t-v                 Verbose. List skip table and block boundaries.\n"
           "\t-f                 Overwrite output without prompting.\n"
@@ -483,7 +593,7 @@ int main(int argc, char **argv) {
   char *executable = argv[0];
 
   int ch;
-  while ((ch = getopt(argc, argv, "l:o:b:T:LFjVfvh")) != -1) {
+  while ((ch = getopt(argc, argv, "l:o:b:T:LFjiVfvh")) != -1) {
     switch (ch) {
     case 'l':
       ctx->level = atoi(optarg);
@@ -518,6 +628,9 @@ int main(int argc, char **argv) {
     case 'F':
       ctx->mode = FASTA;
       break;
+    case 'i':
+      ctx->doIndex = true;
+      break;
     case 'v':
       ctx->verbose = true;
       break;
@@ -550,6 +663,11 @@ int main(int argc, char **argv) {
   if (ctx->outFilename == NULL)
     ctx->outFilename = getOutFilename(ctx->inFilename);
 
+  if (ctx->doIndex && ctx->mode != Line && ctx->mode != FASTA) {
+    fprintf(stderr, "Index emission is supported only in line (-L) and FASTA (-F) mode\n");
+    return 1;
+  }
+
   if (!overwrite && access(ctx->outFilename, F_OK) == 0) {
     char ans;
     fprintf(stderr, "%s already exists. Overwrite? [y/N]: ", ctx->outFilename);
@@ -559,9 +677,30 @@ int main(int argc, char **argv) {
     }
   }
 
+  if (!overwrite && access(ctx->outFilename, F_OK) == 0) {
+    char ans;
+    fprintf(stderr, "%s already exists. Overwrite? [y/N]: ", ctx->outFilename);
+    int res = scanf(" %c", &ans);
+    if (res && ans != 'y') {
+      return 0;
+    }
+  }
+
+  if (ctx->doIndex) {
+    ctx->idxFilename = getIndexFilename(ctx->outFilename);
+    if (!overwrite && access(ctx->idxFilename, F_OK) == 0) {
+      char ans;
+      fprintf(stderr, "%s already exists. Overwrite? [y/N]: ", ctx->idxFilename);
+      int res = scanf(" %c", &ans);
+      if (res && ans != 'y') {
+        return 0;
+      }
+    }
+  }
+
   compressFile(ctx);
 
-  free(ctx);
+  // We leak lots of things here for the sake of simplicity
 
   return 0;
 }

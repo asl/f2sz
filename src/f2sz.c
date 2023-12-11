@@ -470,7 +470,7 @@ int main(int argc, char **argv) {
     switch (ch) {
     case 'l':
       ctx->level = atoi(optarg);
-      if (ctx->level < 1 || ctx->level > 22) {
+      if (ctx->level < ZSTD_minCLevel() || ctx->level > ZSTD_maxCLevel()) {
         usage(executable, "ERROR: Invalid level. Must be between 1 and 22.");
       }
       break;

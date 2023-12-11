@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(f2sz VERSION 1.0.0 LANGUAGES C)
+project(f2sz VERSION 0.1.0 LANGUAGES C)
 
 add_definitions(-DVERSION="${PROJECT_VERSION}")
 

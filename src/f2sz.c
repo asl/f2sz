@@ -237,6 +237,26 @@ static void roundBlockToInput(Block *block, const Context *ctx) {
         block->size = ctx->inBuff + ctx->inBuffSize - block->buf;
 }
 
+// Look for `c` in input buffer starting from the end of block.
+// Returns NULL is no `c` is found until the end of ctx->inBuff,
+// otherwise - the position of `c`. Block end (block->size) is adjusted
+// correspondingly. Note that `c` is not included into the block here.
+static uint8_t *advanceUntil(Block *block, Context *ctx, int c) {
+    size_t remaining = ctx->inBuff + ctx->inBuffSize - block->buf - block->size;
+    uint8_t *pos = memchr(block->buf + block->size, c, remaining);
+    if (pos == NULL) {
+        // No more symbols until the end of the input buffer, grab the
+        // whole chunk
+        block->size += remaining;
+    } else {
+        // Advance block
+        block->size = pos - block->buf;
+    }
+
+    return pos;
+}
+
+
 static void advanceBlock(Block *block, Context *ctx) {
     switch (ctx->mode) {
     default:
@@ -258,17 +278,14 @@ static void advanceBlock(Block *block, Context *ctx) {
 
             // Advance over input buffer counting lines, we know there is at
             // least 1 byte to check
-            size_t remaining = ctx->inBuff + ctx->inBuffSize - block->buf - block->size;
-            uint8_t *pos = memchr(block->buf + block->size, '\n', remaining);
-            if (pos == NULL) {
-                // No more newlines until the end of the input buffer, grab the
-                // whole chunk
-                block->size += remaining;
-                break;
-            }
+            uint8_t *pos = advanceUntil(block, ctx, '\n');
 
-            // Advance over newline
-            block->size = pos - block->buf + 1;
+            // No more newlines until the end of the input buffer
+            if (pos == NULL)
+                break;
+
+            // Advance over newline, `pos` points to newline here
+            block->size += 1;
             ctx->entities += 1;
         }
 
@@ -287,28 +304,26 @@ static void advanceBlock(Block *block, Context *ctx) {
                 break;
 
             // Advance over input buffer, we know there is at least 1 byte to check
-            size_t remaining = ctx->inBuff + ctx->inBuffSize - block->buf - block->size;
-            // Find FASTA header. Usually it should be just current symbol
-            uint8_t *hpos = memchr(block->buf + block->size, '>', remaining);
-            if (hpos == NULL) {
-                // No more FASTA headers until the end of the input buffer, grab the
-                // whole chunk
-                block->size += remaining;
+            // Find FASTA header. Usually it should be just current symbol.
+            // On success block is advanced to '>' position (just before it)
+            uint8_t *hpos = advanceUntil(block, ctx, '>');
+
+            // No more FASTA headers until the end of the input buffer, grab the
+            // whole chunk
+            if (hpos == NULL)
                 break;
-            }
 
             // Find the next header, if any
-            remaining = ctx->inBuff + ctx->inBuffSize - hpos;
-            uint8_t *hpos_next = memchr(hpos + 1, '>', remaining - 1);
-            if (hpos_next == NULL) {
-                // No more FASTA headers until the end of the input buffer, grab the
-                // whole chunk
-                block->size += remaining;
-                break;
-            }
+            block->size += 1;
+            uint8_t *hpos_next = advanceUntil(block, ctx, '>');
 
-            // Align block to '>' position
-            block->size = hpos_next - block->buf;
+            // No more FASTA headers until the end of the input buffer, grab the
+            // whole chunk
+            if (hpos_next == NULL)
+                break;
+
+            // Block is already properly sized to before '>' position, including
+            // the newline
             ctx->entities += 1;
         }
 

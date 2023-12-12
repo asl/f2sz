@@ -93,6 +93,11 @@ static void writeLE32(void *dst, uint32_t data) {
 #endif
 }
 
+#define ZSTD_seekTableFooterSize 9
+#define ZSTD_SEEKABLE_MAGICNUMBER 0x8F92EAB1
+#define ZSTD_SEEKABLE_MAXFRAMES 0x8000000U
+#define ZSTD_SEEKABLE_MAX_FRAME_DECOMPRESSED_SIZE 0x40000000U
+
 static void writeSeekTable(Context *ctx) {
   uint8_t buf[4];
 
@@ -101,7 +106,7 @@ static void writeSeekTable(Context *ctx) {
   fwrite(buf, 4, 1, ctx->outFile);
 
   // Frame_Size
-  writeLE32(buf, ctx->numberOfFrames * 8 + 9);
+  writeLE32(buf, ctx->numberOfFrames * 8 + ZSTD_seekTableFooterSize);
   fwrite(buf, 4, 1, ctx->outFile);
 
   if (ctx->verbose) {
@@ -133,7 +138,7 @@ static void writeSeekTable(Context *ctx) {
   fwrite(buf, 1, 1, ctx->outFile);
 
   // Seekable_Magic_Number
-  writeLE32(buf, 0x8F92EAB1);
+  writeLE32(buf, ZSTD_SEEKABLE_MAGICNUMBER);
   fwrite(buf, 4, 1, ctx->outFile);
 }
 
@@ -153,18 +158,20 @@ static void seekTableAdd(Context *ctx, uint64_t compressedSize,
 
   ctx->numberOfFrames += 1;
 
-  if (ctx->numberOfFrames >= 0x8000000U) {
+  if (ctx->numberOfFrames >= ZSTD_SEEKABLE_MAXFRAMES) {
     ctx->skipSeekTable = true;
     fprintf(stderr,
-            "Warning: Too many frames. Unable to generate the seek table.\n");
+            "Warning: Too many frames (%" PRIu32 "). Unable to generate the seek table.\n",
+            ctx->numberOfFrames);
     return;
   }
 
-  if (decompressedSize >= 0x80000000U) {
+  if (decompressedSize > ZSTD_SEEKABLE_MAX_FRAME_DECOMPRESSED_SIZE) {
     ctx->skipSeekTable = true;
     fprintf(
         stderr,
-        "Warning: Input frame too big. Unable to generate the seek table.\n");
+        "Warning: Input frame too big (%" PRIu64 "). Unable to generate the seek table.\n",
+        decompressedSize);
     return;
   }
 

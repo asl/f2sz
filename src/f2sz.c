@@ -195,15 +195,29 @@ static Context *newContext() {
 static void writeIndex(Context *ctx) {
     char buf[sizeof(size_t)*8+1];
 
+    if (ctx->verbose) {
+        fprintf(stderr, "\n---- index ----\n");
+        fprintf(stderr, "name\tindex\toffset\n");
+    }
+
     for (IndexEntry *e = ctx->index; e; e = e->next) {
         if (e->name.str) {
             fwrite(e->name.str, e->name.len, 1, ctx->outIndex);
             fputc('\t', ctx->outIndex);
+            if (ctx->verbose) {
+                fwrite(e->name.str, e->name.len, 1, stderr);
+                fputc('\t', stderr);
+            }
         }
 
         fprintf(ctx->outIndex,"%zu", e->idx);
         fputc('\t', ctx->outIndex);
         fprintf(ctx->outIndex, "%zu\n", e->offset);
+        if (ctx->verbose) {
+            fprintf(stderr, "%zu", e->idx);
+            fputc('\t', stderr);
+            fprintf(stderr, "%zu\n", e->offset);
+        }
     }
 }
 

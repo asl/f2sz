@@ -93,6 +93,23 @@ static void writeLE32(void *dst, uint32_t data) {
 #endif
 }
 
+static void writeLE64(void *dst, uint64_t data) {
+#if defined(F2SZ_BIG_ENDIAN)
+    uint64_t swap =
+            ((x << 56) & 0xFF00000000000000UL) |
+            ((x << 40) & 0x00FF000000000000UL) |
+            ((x << 24) & 0x0000FF0000000000UL) |
+            ((x <<  8) & 0x000000FF00000000UL) |
+            ((x >>  8) & 0x00000000FF000000UL) |
+            ((x >> 24) & 0x0000000000FF0000UL) |
+            ((x >> 40) & 0x000000000000FF00UL) |
+            ((x >> 56) & 0x00000000000000FFUL);
+    memcpy(dst, &swap, sizeof(swap));
+#else
+    memcpy(dst, &data, sizeof(data));
+#endif
+}
+
 #define ZSTD_seekTableFooterSize 9
 #define ZSTD_SEEKABLE_MAGICNUMBER 0x8F92EAB1
 #define ZSTD_SEEKABLE_MAXFRAMES 0x8000000U
@@ -193,32 +210,79 @@ static Context *newContext() {
 }
 
 static void writeIndex(Context *ctx) {
-    char buf[sizeof(size_t)*8+1];
+    uint8_t buf[sizeof(size_t)];
 
     if (ctx->verbose) {
         fprintf(stderr, "\n---- index ----\n");
-        fprintf(stderr, "name\tindex\toffset\n");
+        fprintf(stderr, "name\tindex\tinput offset\n");
     }
 
-    for (IndexEntry *e = ctx->index; e; e = e->next) {
-        if (e->name.str) {
-            fwrite(e->name.str, e->name.len, 1, ctx->outIndex);
-            fputc('\t', ctx->outIndex);
+    // Write index to separate text index file
+    if (ctx->outIndex) {
+        for (IndexEntry *e = ctx->index; e; e = e->next) {
+            if (e->name.str) {
+                fwrite(e->name.str, e->name.len, 1, ctx->outIndex);
+                fputc('\t', ctx->outIndex);
+                if (ctx->verbose) {
+                    fwrite(e->name.str, e->name.len, 1, stderr);
+                    fputc('\t', stderr);
+                }
+            }
+
+            fprintf(ctx->outIndex,"%zu\t", e->idx);
+            fprintf(ctx->outIndex, "%zu\n", e->offset);
             if (ctx->verbose) {
-                fwrite(e->name.str, e->name.len, 1, stderr);
-                fputc('\t', stderr);
+                fprintf(stderr, "%zu\t", e->idx);
+                fprintf(stderr, "%zu\n", e->offset);
             }
         }
-
-        fprintf(ctx->outIndex,"%zu", e->idx);
-        fputc('\t', ctx->outIndex);
-        fprintf(ctx->outIndex, "%zu\n", e->offset);
-        if (ctx->verbose) {
-            fprintf(stderr, "%zu", e->idx);
-            fputc('\t', stderr);
-            fprintf(stderr, "%zu\n", e->offset);
-        }
     }
+
+    // Add index frame
+
+    // Skippable_Magic_Number
+    writeLE32(buf, ZSTD_MAGIC_SKIPPABLE_START | 0xF);
+    fwrite(buf, 4, 1, ctx->outFile);
+
+    // Determine frame size
+    uint32_t frameSize = 0;
+    for (IndexEntry *e = ctx->index; e; e = e->next) {
+        frameSize += e->name.len + 1; // Zero terminated
+        frameSize += 8 + 8; // idx, offset
+    }
+    frameSize += 9; // footer: number of index entriees, reserved byte, magic
+
+    // Frame_Size
+    writeLE32(buf, frameSize);
+    fwrite(buf, 4, 1, ctx->outFile);
+
+    // Index_Table_Entries
+    size_t entries = 0;
+    for (IndexEntry *e = ctx->index; e; e = e->next) {
+        fwrite(e->name.str, e->name.len, 1, ctx->outFile);
+        fputc(0, ctx->outFile);
+
+        writeLE64(buf, e->idx);
+        fwrite(buf, 8, 1, ctx->outFile);
+
+        writeLE64(buf, e->offset);
+        fwrite(buf, 8, 1, ctx->outFile);
+
+        entries += 1;
+    }
+
+    // Index_Table_Footer
+    // Number_Of_Entries
+    writeLE32(buf, entries);
+    fwrite(buf, 4, 1, ctx->outFile);
+
+    // Index_Table_Descriptor (reserved for later)
+    buf[0] = 0;
+    fwrite(buf, 1, 1, ctx->outFile);
+
+    // Index_Magic_Number
+    writeLE32(buf, 0x46494458); // 'FIDX'
+    fwrite(buf, 4, 1, ctx->outFile);
 }
 
 static IndexEntry *newIndexEntry(StringRef name,
@@ -233,7 +297,8 @@ static IndexEntry *newIndexEntry(StringRef name,
 }
 
 static void indexAdd(Context *ctx,
-                     StringRef name, size_t idx, size_t offset) {
+                     StringRef name, size_t idx,
+                     size_t offset) {
     if (!ctx->doIndex)
         return;
 

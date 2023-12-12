@@ -679,9 +679,9 @@ int main(int argc, char **argv) {
   argv += optind;
 
   if (argc < 1)
-    usage(executable, "Not enough arguments");
+    usage(executable, "Not enough arguments\n");
   else if (argc > 1)
-    usage(executable, "Too many arguments");
+    usage(executable, "Too many arguments\n");
 
   ctx->inFilename = argv[0];
   if (access(ctx->inFilename, F_OK) != 0) {

@@ -257,7 +257,8 @@ static void prepareInput(Context *ctx) {
   ctx->inBuffSize = lseek(fd, 0L, SEEK_END);
 
   ctx->inBuff =
-      (uint8_t *)mmap(NULL, ctx->inBuffSize, PROT_READ, MAP_PRIVATE, fd, 0);
+          (uint8_t *)mmap(NULL, ctx->inBuffSize ? ctx->inBuffSize : 1,
+                          PROT_READ, MAP_PRIVATE, fd, 0);
   if (ctx->inBuff == MAP_FAILED) {
     fprintf(stderr, "ERROR: Unable to mmap '%s'\n", ctx->inFilename);
     exit(1);

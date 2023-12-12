@@ -262,6 +262,11 @@ static void prepareInput(Context *ctx) {
     fprintf(stderr, "ERROR: Unable to mmap '%s'\n", ctx->inFilename);
     exit(1);
   }
+
+  if (!ctx->minBlockSize)
+      ctx->minBlockSize = ctx->inBuffSize < ZSTD_SEEKABLE_MAX_FRAME_DECOMPRESSED_SIZE ?
+                          ctx->inBuffSize : ZSTD_SEEKABLE_MAX_FRAME_DECOMPRESSED_SIZE;
+
   close(fd);
 }
 
@@ -351,15 +356,10 @@ static void advanceBlock(Block *block, Context *ctx) {
     switch (ctx->mode) {
     default:
     case Raw:
-        block->size = ctx->minBlockSize ? ctx->minBlockSize : ctx->inBuffSize;
+        block->size = ctx->inBuffSize;
         ctx->entities += 1;
         break;
     case Line: {
-        if (!ctx->minBlockSize) {
-            block->size = ctx->inBuffSize;
-            break;
-        }
-
         size_t lineNo = ctx->entities;
         block->size = 0;
         while (block->size < ctx->minBlockSize) {
@@ -386,11 +386,6 @@ static void advanceBlock(Block *block, Context *ctx) {
         break;
     }
     case FASTA: {
-        if (!ctx->minBlockSize) {
-            block->size = ctx->inBuffSize;
-            break;
-        }
-
         size_t seqNo = ctx->entities;
         StringRef name = { NULL, 0 };
 
@@ -639,6 +634,11 @@ int main(int argc, char **argv) {
       if (ctx->minBlockSize < multiplier) {
         usage(executable, "ERROR: Invalid block size");
       }
+      if (ctx->minBlockSize > ZSTD_SEEKABLE_MAX_FRAME_DECOMPRESSED_SIZE) {
+          usage(executable, "ERROR: Invalid block size. Must be %u or less",
+                ZSTD_SEEKABLE_MAX_FRAME_DECOMPRESSED_SIZE);
+      }
+
       break;
     }
     case 'T':

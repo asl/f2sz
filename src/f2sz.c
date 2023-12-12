@@ -10,10 +10,11 @@
 #include <fcntl.h>
 #include <getopt.h>
 #include <stdbool.h>
-#include <stdint.h>
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdarg.h>
 #include <sys/mman.h>
 #include <unistd.h>
 #include <zstd.h>
@@ -526,9 +527,15 @@ static void version() {
       VERSION);
 }
 
-static void usage(const char *name, const char *str) {
-  if (str)
-    fprintf(stderr, "%s\n\n", str);
+static void usage(const char *naame, const char *fmt, ...) __attribute__ ((format (printf, 2, 3)));
+
+static void usage(const char *name, const char *fmt, ...)  {
+  if (fmt) {
+      va_list ap = NULL;
+      va_start(ap, fmt);
+      vfprintf(stderr, fmt, ap);
+      va_end(ap);
+  }
 
   fprintf(stderr,
           "f2sz: FASTA 2 seekable zstd.\n"
@@ -598,7 +605,8 @@ int main(int argc, char **argv) {
     case 'l':
       ctx->level = atoi(optarg);
       if (ctx->level < ZSTD_minCLevel() || ctx->level > ZSTD_maxCLevel()) {
-        usage(executable, "ERROR: Invalid level. Must be between 1 and 22.");
+        usage(executable, "ERROR: Invalid level. Must be between %u and %u.",
+              ZSTD_minCLevel(), ZSTD_maxCLevel());
       }
       break;
     case 'o':

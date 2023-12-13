@@ -587,15 +587,19 @@ static void compressFile(Context *ctx) {
 }
 
 static char *getOutFilename(const char *inFilename) {
-  char *buff = strdup(inFilename);
+  const size_t size = strlen(inFilename) + 5; // .zst + NULL
+  void *const buff = calloc(1, size);
+  strcat(buff, inFilename);
   strcat(buff, ".zst");
-  return buff;
+  return (char *)buff;
 }
 
 static char *getIndexFilename(const char *outFilename) {
-  char *buff = strdup(outFilename);
+  const size_t size = strlen(outFilename) + 5; // .zst + NULL
+  void *const buff = calloc(1, size);
+  strcat(buff, outFilename);
   strcat(buff, ".idx");
-  return buff;
+  return (char *)buff;
 }
 
 static void version() {
@@ -613,7 +617,7 @@ static void usage(const char *naame, const char *fmt, ...) __attribute__ ((forma
 
 static void usage(const char *name, const char *fmt, ...)  {
   if (fmt) {
-      va_list ap = NULL;
+      va_list ap;
       va_start(ap, fmt);
       vfprintf(stderr, fmt, ap);
       va_end(ap);

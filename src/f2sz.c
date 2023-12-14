@@ -71,8 +71,10 @@ typedef struct {
 
     // output index
     IndexEntry *index;
+    IndexEntry *lastEntry;
     FILE *outIndex;
     bool doIndex;
+    bool fullIndex;
 
     // compression context
     ZSTD_CCtx *cctx;
@@ -296,21 +298,20 @@ static IndexEntry *newIndexEntry(StringRef name,
   return e;
 }
 
-static void indexAdd(Context *ctx,
-                     StringRef name, size_t idx,
-                     size_t offset) {
+static IndexEntry *indexAdd(Context *ctx,
+                            StringRef name, size_t idx,
+                            size_t offset) {
     if (!ctx->doIndex)
-        return;
+        return NULL;
 
     if (!ctx->index) {
-        ctx->index = newIndexEntry(name, idx, offset);
+        ctx->index = ctx->lastEntry = newIndexEntry(name, idx, offset);
     } else {
-        IndexEntry *e = ctx->index;
-        for (; e->next; e = e->next)
-            ;
-
-        e->next = newIndexEntry(name, idx, offset);
+        IndexEntry *e = ctx->lastEntry;
+        ctx->lastEntry = e->next = newIndexEntry(name, idx, offset);
     }
+
+    return ctx->lastEntry;
 }
 
 static void prepareInput(Context *ctx) {
@@ -426,12 +427,20 @@ static void advanceBlock(Block *block, Context *ctx) {
         ctx->entities += 1;
         break;
     case Line: {
-        size_t lineNo = ctx->entities;
         block->size = 0;
+        IndexEntry *indexEntry = NULL;
         while (block->size < ctx->minBlockSize) {
             // End of input buffer
             if (block->buf + block->size >= ctx->inBuff + ctx->inBuffSize)
                 break;
+
+            if (ctx->doIndex &&
+                (indexEntry == NULL || ctx->fullIndex)) {
+                StringRef dummy = { NULL, 0};
+                indexEntry = indexAdd(ctx, dummy,
+                                      ctx->entities,
+                                      block->buf + block->size - ctx->inBuff);
+            }
 
             // Advance over input buffer counting lines, we know there is at
             // least 1 byte to check
@@ -446,13 +455,9 @@ static void advanceBlock(Block *block, Context *ctx) {
             ctx->entities += 1;
         }
 
-        StringRef dummy = { NULL, 0};
-        indexAdd(ctx, dummy, lineNo, block->buf - ctx->inBuff);
-
         break;
     }
     case FASTA: {
-        size_t seqNo = ctx->entities;
         StringRef name = { NULL, 0 };
 
         block->size = 0;
@@ -475,7 +480,8 @@ static void advanceBlock(Block *block, Context *ctx) {
             block->size += 1;
 
             // See if we need to record the name of the sequence
-            if (name.str == NULL) {
+            if (ctx->doIndex &&
+                (name.str == NULL || ctx->fullIndex)) {
                 uint8_t *eol = advanceUntil(block, ctx, '\n');
                 // No more newlines until EOF - likely malformed entry
                 // but we'd simply grab the whole chunk then
@@ -490,6 +496,8 @@ static void advanceBlock(Block *block, Context *ctx) {
 
                 name.str = (char*)hpos + 1;
                 name.len = hlen;
+
+                indexAdd(ctx, name, ctx->entities, hpos - ctx->inBuff);
             }
 
             // Find the next header, if any
@@ -504,9 +512,6 @@ static void advanceBlock(Block *block, Context *ctx) {
             // the newline
             ctx->entities += 1;
         }
-
-        if (name.str)
-            indexAdd(ctx, name, seqNo, block->buf - ctx->inBuff);
 
         break;
     }
@@ -636,7 +641,7 @@ static void usage(const char *name, const char *fmt, ...)  {
           "Usage: %1$s [OPTIONS...] [TAR ARCHIVE]\n"
           "\n"
           "Examples:\n"
-          "\t%1$s any.file -s 10M                        Compress any.file to "
+          "\t%1$s any.file -f 10M                        Compress any.file to "
           "any.file.zst, each input block will be of 10M\n"
           "\t%1$s any.file -o output.file.zst            Compress any.file to "
           "any.file.zst\n"
@@ -669,6 +674,7 @@ static void usage(const char *name, const char *fmt, ...)  {
           "\t                   If `-b` is too small it is possible "
           "that a lower number of threads will be used.\n"
           "\t-i                 Generate index table for blocks.\n"
+          "\t-I                 Generate index table for records / lines.\n"
           "\t-j                 Do not generate a seek table.\n"
           "\t-v                 Verbose. List skip table and block boundaries.\n"
           "\t-f                 Overwrite output without prompting.\n"
@@ -686,7 +692,7 @@ int main(int argc, char **argv) {
   char *executable = argv[0];
 
   int ch;
-  while ((ch = getopt(argc, argv, "l:o:b:T:LFjiVfvh")) != -1) {
+  while ((ch = getopt(argc, argv, "l:o:b:T:LFjiIVfvh")) != -1) {
     switch (ch) {
     case 'l':
       ctx->level = atoi(optarg);
@@ -727,6 +733,9 @@ int main(int argc, char **argv) {
     case 'F':
       ctx->mode = FASTA;
       break;
+    case 'I':
+      ctx->fullIndex = true;
+      // fallthrough
     case 'i':
       ctx->doIndex = true;
       break;

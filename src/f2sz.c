@@ -42,6 +42,12 @@ struct IndexEntry {
   IndexEntry *next;
 };
 
+
+typedef struct {
+  IndexEntry *head;
+  IndexEntry *tail;
+} Index;
+
 typedef enum {
     Raw = 0,
     Line,
@@ -70,8 +76,8 @@ typedef struct {
     void *outBuff;
 
     // output index
-    IndexEntry *index;
-    IndexEntry *lastEntry;
+    Index blockIndex;
+    Index recordIndex;
     FILE *outIndex;
     bool doIndex;
     bool fullIndex;
@@ -214,6 +220,9 @@ static Context *newContext() {
 static void writeIndex(Context *ctx) {
     uint8_t buf[sizeof(size_t)];
 
+    if (!ctx->doIndex)
+        return;
+
     if (ctx->verbose) {
         fprintf(stderr, "\n---- index ----\n");
         fprintf(stderr, "name\tindex\tinput offset\n");
@@ -221,7 +230,9 @@ static void writeIndex(Context *ctx) {
 
     // Write index to separate text index file
     if (ctx->outIndex) {
-        for (IndexEntry *e = ctx->index; e; e = e->next) {
+        for (IndexEntry *e =
+                     ctx->fullIndex ? ctx->recordIndex.head : ctx->blockIndex.head;
+             e; e = e->next) {
             if (e->name.str) {
                 fwrite(e->name.str, e->name.len, 1, ctx->outIndex);
                 fputc('\t', ctx->outIndex);
@@ -248,7 +259,7 @@ static void writeIndex(Context *ctx) {
 
     // Determine frame size
     uint32_t frameSize = 0;
-    for (IndexEntry *e = ctx->index; e; e = e->next) {
+    for (IndexEntry *e = ctx->blockIndex.head; e; e = e->next) {
         frameSize += e->name.len + 1; // Zero terminated
         frameSize += 8 + 8; // idx, offset
     }
@@ -260,7 +271,7 @@ static void writeIndex(Context *ctx) {
 
     // Index_Table_Entries
     size_t entries = 0;
-    for (IndexEntry *e = ctx->index; e; e = e->next) {
+    for (IndexEntry *e = ctx->blockIndex.head; e; e = e->next) {
         fwrite(e->name.str, e->name.len, 1, ctx->outFile);
         fputc(0, ctx->outFile);
 
@@ -298,20 +309,17 @@ static IndexEntry *newIndexEntry(StringRef name,
   return e;
 }
 
-static IndexEntry *indexAdd(Context *ctx,
-                            StringRef name, size_t idx,
+static IndexEntry *indexAdd(Index *idx,
+                            StringRef name, size_t pos,
                             size_t offset) {
-    if (!ctx->doIndex)
-        return NULL;
-
-    if (!ctx->index) {
-        ctx->index = ctx->lastEntry = newIndexEntry(name, idx, offset);
+    if (!idx->head) {
+        idx->head = idx->tail = newIndexEntry(name, pos, offset);
     } else {
-        IndexEntry *e = ctx->lastEntry;
-        ctx->lastEntry = e->next = newIndexEntry(name, idx, offset);
+        IndexEntry *e = idx->tail;
+        idx->tail = e->next = newIndexEntry(name, pos, offset);
     }
 
-    return ctx->lastEntry;
+    return idx->tail;
 }
 
 static void prepareInput(Context *ctx) {
@@ -434,12 +442,16 @@ static void advanceBlock(Block *block, Context *ctx) {
             if (block->buf + block->size >= ctx->inBuff + ctx->inBuffSize)
                 break;
 
-            if (ctx->doIndex &&
-                (indexEntry == NULL || ctx->fullIndex)) {
+            if (ctx->doIndex) {
                 StringRef dummy = { NULL, 0};
-                indexEntry = indexAdd(ctx, dummy,
-                                      ctx->entities,
-                                      block->buf + block->size - ctx->inBuff);
+                if (indexEntry == NULL)
+                    indexEntry = indexAdd(&ctx->blockIndex, dummy,
+                                          ctx->entities,
+                                          block->buf + block->size - ctx->inBuff);
+                if (ctx->fullIndex)
+                    indexAdd(&ctx->recordIndex, dummy,
+                             ctx->entities,
+                             block->buf + block->size - ctx->inBuff);
             }
 
             // Advance over input buffer counting lines, we know there is at
@@ -458,9 +470,8 @@ static void advanceBlock(Block *block, Context *ctx) {
         break;
     }
     case FASTA: {
-        StringRef name = { NULL, 0 };
-
         block->size = 0;
+        IndexEntry *indexEntry = NULL;
         while (block->size < ctx->minBlockSize) {
             // End of input buffer
             if (block->buf + block->size >= ctx->inBuff + ctx->inBuffSize)
@@ -480,8 +491,7 @@ static void advanceBlock(Block *block, Context *ctx) {
             block->size += 1;
 
             // See if we need to record the name of the sequence
-            if (ctx->doIndex &&
-                (name.str == NULL || ctx->fullIndex)) {
+            if (ctx->doIndex) {
                 uint8_t *eol = advanceUntil(block, ctx, '\n');
                 // No more newlines until EOF - likely malformed entry
                 // but we'd simply grab the whole chunk then
@@ -494,10 +504,17 @@ static void advanceBlock(Block *block, Context *ctx) {
                 if (space != NULL)
                     hlen = space - hpos - 1;
 
-                name.str = (char*)hpos + 1;
-                name.len = hlen;
+                StringRef name = { (char*)hpos + 1, hlen };
 
-                indexAdd(ctx, name, ctx->entities, hpos - ctx->inBuff);
+                // If this is first record in block, record it's location in block index
+                if (indexEntry == NULL)
+                    indexEntry = indexAdd(&ctx->blockIndex,
+                                          name, ctx->entities, hpos - ctx->inBuff);
+
+                // If we're producing a complete (record) index, record the location
+                if (ctx->fullIndex)
+                    indexAdd(&ctx->recordIndex,
+                             name, ctx->entities, hpos - ctx->inBuff);
             }
 
             // Find the next header, if any

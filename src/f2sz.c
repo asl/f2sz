@@ -81,6 +81,7 @@ typedef struct {
     FILE *outIndex;
     bool doIndex;
     bool fullIndex;
+    bool skipExtIndex;
 
     // compression context
     ZSTD_CCtx *cctx;
@@ -352,7 +353,7 @@ static void prepareOutput(Context *ctx) {
     exit(1);
   }
 
-  if (ctx->doIndex) {
+  if (ctx->doIndex && !ctx->skipExtIndex) {
     ctx->outIndex = fopen(ctx->idxFilename, "wt");
     if (!ctx->outIndex) {
       fprintf(stderr, "ERROR: Cannot open index file for writing\n");
@@ -655,11 +656,15 @@ static void usage(const char *name, const char *fmt, ...)  {
           "\tC/C++ library:  https://github.com/martinellimarco/libzstd-seek\n"
           "\tPython library: https://github.com/martinellimarco/indexed_zstd\n"
           "\n"
-          "Usage: %1$s [OPTIONS...] [TAR ARCHIVE]\n"
+          "Usage: %1$s [OPTIONS...] [INPUT FILE]\n"
           "\n"
           "Examples:\n"
           "\t%1$s any.file -f 10M                        Compress any.file to "
           "any.file.zst, each input block will be of 10M\n"
+          "\t%1$s contigs.fasta -f -F -i 10M             Compress contigs.fasta to "
+          "contigs.fasta.zst, each input block will \n"
+          "\t                                              be at least 10M aligned to FASTA "
+          " boundaries. Index for blocks is generated as well\n"
           "\t%1$s any.file -o output.file.zst            Compress any.file to "
           "any.file.zst\n"
           "\t%1$s any.file -o /dev/stdout                Compress any.file to "
@@ -692,6 +697,7 @@ static void usage(const char *name, const char *fmt, ...)  {
           "that a lower number of threads will be used.\n"
           "\t-i                 Generate index table for blocks.\n"
           "\t-I                 Generate index table for records / lines.\n"
+          "\t-J                 Do not generate external index in .idx file\n"
           "\t-j                 Do not generate a seek table.\n"
           "\t-v                 Verbose. List skip table and block boundaries.\n"
           "\t-f                 Overwrite output without prompting.\n"
@@ -709,7 +715,7 @@ int main(int argc, char **argv) {
   char *executable = argv[0];
 
   int ch;
-  while ((ch = getopt(argc, argv, "l:o:b:T:LFjiIVfvh")) != -1) {
+  while ((ch = getopt(argc, argv, "l:o:b:T:LFjiIJVfvh")) != -1) {
     switch (ch) {
     case 'l':
       ctx->level = atoi(optarg);
@@ -755,6 +761,9 @@ int main(int argc, char **argv) {
       // fallthrough
     case 'i':
       ctx->doIndex = true;
+      break;
+    case 'J':
+      ctx->skipExtIndex = true;
       break;
     case 'v':
       ctx->verbose = true;
@@ -811,7 +820,7 @@ int main(int argc, char **argv) {
     }
   }
 
-  if (ctx->doIndex) {
+  if (ctx->doIndex && !ctx->skipExtIndex) {
     ctx->idxFilename = getIndexFilename(ctx->outFilename);
     if (!overwrite && access(ctx->idxFilename, F_OK) == 0) {
       char ans;

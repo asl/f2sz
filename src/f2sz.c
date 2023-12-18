@@ -602,7 +602,7 @@ static void compressFile(Context *ctx) {
 
     ZSTD_freeCCtx(ctx->cctx);
     fclose(ctx->outFile);
-    if (ctx->doIndex)
+    if (ctx->outIndex)
         fclose(ctx->outIndex);
     free(ctx->outBuff);
     munmap(ctx->inBuff, ctx->inBuffSize);

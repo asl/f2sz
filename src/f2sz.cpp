@@ -25,32 +25,6 @@
 #include "seekable.h"
 #include "utils.h"
 
-typedef struct SeekTableEntry SeekTableEntry;
-
-struct SeekTableEntry {
-  uint32_t compressedSize;
-  uint32_t decompressedSize;
-  SeekTableEntry *next;
-};
-
-typedef struct {
-  char *str;
-  size_t len;
-} StringRef;
-
-typedef struct IndexEntry IndexEntry;
-struct IndexEntry {
-  StringRef name;
-  size_t idx;
-  size_t offset;
-  IndexEntry *next;
-};
-
-typedef struct {
-  IndexEntry *head;
-  IndexEntry *tail;
-} Index;
-
 typedef enum {
     Raw = 0,
     Line,
@@ -79,114 +53,32 @@ typedef struct {
     void *outBuff;
 
     // output index
-    Index blockIndex;
-    Index recordIndex;
-    FILE *outIndex;
+    RecordIndex blockIndex;
+    RecordIndex recordIndex;
     bool doIndex;
     bool fullIndex;
-    bool skipExtIndex;
 
     // compression context
     ZSTD_CCtx *cctx;
 
     // seek table
-    SeekTableEntry *seekTable;
-    uint32_t numberOfFrames;
+    SeekTable seekTable;
     bool skipSeekTable;
 } Context;
 
-static void writeLE32(void *dst, uint32_t data) {
-#if defined(F2SZ_BIG_ENDIAN)
-    uint32_t swap = ((data & 0xFF000000) >> 24) | ((data & 0x00FF0000) >> 8) |
-                    ((data & 0x0000FF00) << 8) | ((data & 0x000000FF) << 24);
-    memcpy(dst, &swap, sizeof(swap));
-#else
-    memcpy(dst, &data, sizeof(data));
-#endif
-}
-
-static void writeLE64(void *dst, uint64_t data) {
-#if defined(F2SZ_BIG_ENDIAN)
-    uint64_t swap =
-            ((x << 56) & 0xFF00000000000000UL) |
-            ((x << 40) & 0x00FF000000000000UL) |
-            ((x << 24) & 0x0000FF0000000000UL) |
-            ((x <<  8) & 0x000000FF00000000UL) |
-            ((x >>  8) & 0x00000000FF000000UL) |
-            ((x >> 24) & 0x0000000000FF0000UL) |
-            ((x >> 40) & 0x000000000000FF00UL) |
-            ((x >> 56) & 0x00000000000000FFUL);
-    memcpy(dst, &swap, sizeof(swap));
-#else
-    memcpy(dst, &data, sizeof(data));
-#endif
-}
-
-static void writeSeekTable(Context *ctx) {
-  uint8_t buf[4];
-
-  // Skippable_Magic_Number
-  writeLE32(buf, ZSTD_MAGIC_SKIPPABLE_START | 0xE);
-  fwrite(buf, 4, 1, ctx->outFile);
-
-  // Frame_Size
-  writeLE32(buf, ctx->numberOfFrames * 8 + ZSTD_seekTableFooterSize);
-  fwrite(buf, 4, 1, ctx->outFile);
-
-  if (ctx->verbose) {
-    fprintf(stderr, "\n---- seek table ----\n");
-    fprintf(stderr, "decompressed\tcompressed\n");
-  }
-
-  // Seek_Table_Entries
-  for (SeekTableEntry *e = ctx->seekTable; e; e = e->next) {
-    // Compressed_Size
-    writeLE32(buf, e->compressedSize);
-    fwrite(buf, 4, 1, ctx->outFile);
-
-    // Decompressed_Size
-    writeLE32(buf, e->decompressedSize);
-    fwrite(buf, 4, 1, ctx->outFile);
-
-    if (ctx->verbose)
-      fprintf(stderr, "%u\t%u\n", e->decompressedSize, e->compressedSize);
-  }
-
-  // Seek_Table_Footer
-  // Number_Of_Frames
-  writeLE32(buf, ctx->numberOfFrames);
-  fwrite(buf, 4, 1, ctx->outFile);
-
-  // Seek_Table_Descriptor
-  buf[0] = 0;
-  fwrite(buf, 1, 1, ctx->outFile);
-
-  // Seekable_Magic_Number
-  writeLE32(buf, ZSTD_SEEKABLE_MAGICNUMBER);
-  fwrite(buf, 4, 1, ctx->outFile);
-}
-
-static SeekTableEntry *newSeekTableEntry(uint32_t compressedSize,
-                                         uint32_t decompressedSize) {
-  SeekTableEntry *e = new SeekTableEntry;
-  memset(e, 0, sizeof(SeekTableEntry));
-  e->compressedSize = compressedSize;
-  e->decompressedSize = decompressedSize;
-  return e;
-}
-
-static void seekTableAdd(Context *ctx, uint64_t compressedSize,
+static void seekTableAdd(Context *ctx,
+                         uint64_t compressedSize,
                          uint64_t decompressedSize) {
   if (ctx->skipSeekTable)
     return;
 
-  ctx->numberOfFrames += 1;
+  size_t numberOfFrames = ctx->seekTable.size() + 1;
 
-  if (ctx->numberOfFrames >= ZSTD_SEEKABLE_MAXFRAMES) {
+  if (numberOfFrames >= ZSTD_SEEKABLE_MAXFRAMES) {
     ctx->skipSeekTable = true;
     fprintf(stderr,
-            "Warning: Too many frames (%" PRIu32 "). Unable to generate the seek table.\n",
-            ctx->numberOfFrames);
+            "Warning: Too many frames (%zu). Unable to generate the seek table.\n",
+            numberOfFrames);
     return;
   }
 
@@ -199,14 +91,7 @@ static void seekTableAdd(Context *ctx, uint64_t compressedSize,
     return;
   }
 
-  if (!ctx->seekTable) {
-    ctx->seekTable = newSeekTableEntry(compressedSize, decompressedSize);
-  } else {
-    SeekTableEntry *e = ctx->seekTable;
-    for (; e->next; e = e->next) {
-    }
-    e->next = newSeekTableEntry(compressedSize, decompressedSize);
-  }
+  ctx->seekTable.add(compressedSize, decompressedSize);
 }
 
 static Context *newContext() {
@@ -214,111 +99,6 @@ static Context *newContext() {
   memset(ctx, 0, sizeof(Context));
   ctx->level = 3;
   return ctx;
-}
-
-static void writeIndex(Context *ctx) {
-    uint8_t buf[sizeof(size_t)];
-
-    if (!ctx->doIndex)
-        return;
-
-    if (ctx->verbose) {
-        fprintf(stderr, "\n---- index ----\n");
-        fprintf(stderr, "name\tindex\tinput offset\n");
-    }
-
-    // Write index to separate text index file
-    if (ctx->outIndex) {
-        for (IndexEntry *e =
-                     ctx->fullIndex ? ctx->recordIndex.head : ctx->blockIndex.head;
-             e; e = e->next) {
-            if (e->name.str) {
-                fwrite(e->name.str, e->name.len, 1, ctx->outIndex);
-                fputc('\t', ctx->outIndex);
-                if (ctx->verbose) {
-                    fwrite(e->name.str, e->name.len, 1, stderr);
-                    fputc('\t', stderr);
-                }
-            }
-
-            fprintf(ctx->outIndex,"%zu\t", e->idx);
-            fprintf(ctx->outIndex, "%zu\n", e->offset);
-            if (ctx->verbose) {
-                fprintf(stderr, "%zu\t", e->idx);
-                fprintf(stderr, "%zu\n", e->offset);
-            }
-        }
-    }
-
-    // Add index frame
-
-    // Skippable_Magic_Number
-    writeLE32(buf, ZSTD_MAGIC_SKIPPABLE_START | 0xF);
-    fwrite(buf, 4, 1, ctx->outFile);
-
-    // Determine frame size
-    uint32_t frameSize = 0;
-    for (IndexEntry *e = ctx->blockIndex.head; e; e = e->next) {
-        frameSize += e->name.len + 1; // Zero terminated
-        frameSize += 8 + 8; // idx, offset
-    }
-    frameSize += ZSTD_indexTableFooterSize; // footer: number of index entriees, reserved byte, magic
-
-    // Frame_Size
-    writeLE32(buf, frameSize);
-    fwrite(buf, 4, 1, ctx->outFile);
-
-    // Index_Table_Entries
-    size_t entries = 0;
-    for (IndexEntry *e = ctx->blockIndex.head; e; e = e->next) {
-        fwrite(e->name.str, e->name.len, 1, ctx->outFile);
-        fputc(0, ctx->outFile);
-
-        writeLE64(buf, e->idx);
-        fwrite(buf, 8, 1, ctx->outFile);
-
-        writeLE64(buf, e->offset);
-        fwrite(buf, 8, 1, ctx->outFile);
-
-        entries += 1;
-    }
-
-    // Index_Table_Footer
-    // Number_Of_Entries
-    writeLE32(buf, entries);
-    fwrite(buf, 4, 1, ctx->outFile);
-
-    // Index_Table_Descriptor (reserved for later)
-    buf[0] = 0;
-    fwrite(buf, 1, 1, ctx->outFile);
-
-    // Index_Magic_Number
-    writeLE32(buf, ZSTD_FIDX_MAGICNUMBER); // 'FIDX'
-    fwrite(buf, 4, 1, ctx->outFile);
-}
-
-static IndexEntry *newIndexEntry(StringRef name,
-                                 size_t idx,
-                                 size_t offset) {
-  IndexEntry *e = new IndexEntry;
-  memset(e, 0, sizeof(IndexEntry));
-  e->name = name;
-  e->idx = idx;
-  e->offset = offset;
-  return e;
-}
-
-static IndexEntry *indexAdd(Index *idx,
-                            StringRef name, size_t pos,
-                            size_t offset) {
-    if (!idx->head) {
-        idx->head = idx->tail = newIndexEntry(name, pos, offset);
-    } else {
-        IndexEntry *e = idx->tail;
-        idx->tail = e->next = newIndexEntry(name, pos, offset);
-    }
-
-    return idx->tail;
 }
 
 static void prepareInput(Context *ctx) {
@@ -338,8 +118,7 @@ static void prepareInput(Context *ctx) {
   }
 
   if (!ctx->minBlockSize)
-      ctx->minBlockSize = ctx->inBuffSize < ZSTD_SEEKABLE_MAX_FRAME_DECOMPRESSED_SIZE ?
-                          ctx->inBuffSize : ZSTD_SEEKABLE_MAX_FRAME_DECOMPRESSED_SIZE;
+      ctx->minBlockSize = std::min(ctx->inBuffSize, ZSTD_SEEKABLE_MAX_FRAME_DECOMPRESSED_SIZE);
 
   close(fd);
 }
@@ -351,13 +130,6 @@ static void prepareOutput(Context *ctx) {
     exit(1);
   }
 
-  if (ctx->doIndex && !ctx->skipExtIndex) {
-    ctx->outIndex = fopen(ctx->idxFilename.c_str(), "wt");
-    if (!ctx->outIndex) {
-      fprintf(stderr, "ERROR: Cannot open index file for writing\n");
-      exit(1);
-    }
-  }
   ctx->outBuffSize = ZSTD_CStreamOutSize();
   ctx->outBuff = malloc(ctx->outBuffSize);
 }
@@ -435,22 +207,23 @@ static void advanceBlock(Block *block, Context *ctx) {
         break;
     case Line: {
         block->size = 0;
-        IndexEntry *indexEntry = NULL;
+        bool addToBlockIndex = true;
         while (block->size < ctx->minBlockSize) {
             // End of input buffer
             if (block->buf + block->size >= ctx->inBuff + ctx->inBuffSize)
                 break;
 
             if (ctx->doIndex) {
-                StringRef dummy = { NULL, 0};
-                if (indexEntry == NULL)
-                    indexEntry = indexAdd(&ctx->blockIndex, dummy,
-                                          ctx->entities,
-                                          block->buf + block->size - ctx->inBuff);
+                if (addToBlockIndex) {
+                    ctx->blockIndex.add({},
+                                        ctx->entities,
+                                        block->buf + block->size - ctx->inBuff);
+                    addToBlockIndex = false;
+                }
                 if (ctx->fullIndex)
-                    indexAdd(&ctx->recordIndex, dummy,
-                             ctx->entities,
-                             block->buf + block->size - ctx->inBuff);
+                    ctx->recordIndex.add({},
+                                         ctx->entities,
+                                         block->buf + block->size - ctx->inBuff);
             }
 
             // Advance over input buffer counting lines, we know there is at
@@ -470,7 +243,7 @@ static void advanceBlock(Block *block, Context *ctx) {
     }
     case FASTA: {
         block->size = 0;
-        IndexEntry *indexEntry = NULL;
+        bool addToBlockIndex = true;
         while (block->size < ctx->minBlockSize) {
             // End of input buffer
             if (block->buf + block->size >= ctx->inBuff + ctx->inBuffSize)
@@ -503,17 +276,17 @@ static void advanceBlock(Block *block, Context *ctx) {
                 if (space != NULL)
                     hlen = space - hpos - 1;
 
-                StringRef name = { (char*)hpos + 1, hlen };
+                std::string_view name{ (char*)hpos + 1, hlen };
 
                 // If this is first record in block, record it's location in block index
-                if (indexEntry == NULL)
-                    indexEntry = indexAdd(&ctx->blockIndex,
-                                          name, ctx->entities, hpos - ctx->inBuff);
+                if (addToBlockIndex) {
+                    ctx->blockIndex.add(name, ctx->entities, hpos - ctx->inBuff);
+                    addToBlockIndex = false;
+                }
 
                 // If we're producing a complete (record) index, record the location
                 if (ctx->fullIndex)
-                    indexAdd(&ctx->recordIndex,
-                             name, ctx->entities, hpos - ctx->inBuff);
+                    ctx->recordIndex.add(name, ctx->entities, hpos - ctx->inBuff);
             }
 
             // Find the next header, if any
@@ -595,24 +368,18 @@ static void compressFile(Context *ctx) {
     }
 
     if (ctx->doIndex)
-        writeIndex(ctx);
+        ctx->blockIndex.write(ctx->outFile, ctx->verbose);
     if (!ctx->skipSeekTable)
-        writeSeekTable(ctx);
+        ctx->seekTable.write(ctx->outFile, ctx->verbose);
 
     ZSTD_freeCCtx(ctx->cctx);
     fclose(ctx->outFile);
-    if (ctx->outIndex)
-        fclose(ctx->outIndex);
     free(ctx->outBuff);
     munmap(ctx->inBuff, ctx->inBuffSize);
 }
 
 static std::string getOutFilename(std::string_view inFilename) {
     return std::string(inFilename) + ".zst";
-}
-
-static std::string getIndexFilename(std::string_view outFilename) {
-    return std::string(outFilename) + ".idx";
 }
 
 static void version() {
@@ -724,7 +491,7 @@ int main(int argc, char **argv) {
         usage(executable, "ERROR: Invalid block size");
       }
       if (ctx->minBlockSize > ZSTD_SEEKABLE_MAX_FRAME_DECOMPRESSED_SIZE) {
-          usage(executable, "ERROR: Invalid block size. Must be %u or less",
+          usage(executable, "ERROR: Invalid block size. Must be %zu or less",
                 ZSTD_SEEKABLE_MAX_FRAME_DECOMPRESSED_SIZE);
       }
 
@@ -751,9 +518,6 @@ int main(int argc, char **argv) {
       // fallthrough
     case 'i':
       ctx->doIndex = true;
-      break;
-    case 'J':
-      ctx->skipExtIndex = true;
       break;
     case 'v':
       ctx->verbose = true;
@@ -807,18 +571,6 @@ int main(int argc, char **argv) {
     int res = scanf(" %c", &ans);
     if (res && ans != 'y') {
       return 0;
-    }
-  }
-
-  if (ctx->doIndex && !ctx->skipExtIndex) {
-    ctx->idxFilename = getIndexFilename(ctx->outFilename);
-    if (!overwrite && access(ctx->idxFilename.c_str(), F_OK) == 0) {
-      char ans;
-      fprintf(stderr, "%s already exists. Overwrite? [y/N]: ", ctx->idxFilename.c_str());
-      int res = scanf(" %c", &ans);
-      if (res && ans != 'y') {
-        return 0;
-      }
     }
   }
 

@@ -15,11 +15,11 @@ if (CMAKE_CXX_BYTE_ORDER STREQUAL BIG_ENDIAN)
   add_compile_definitions(F2SZ_BIG_ENDIAN=1)
 endif()
 
-add_executable(f2sz src/f2sz.cpp src/utils.cpp)
+add_executable(f2sz src/f2sz.cpp src/utils.cpp src/seekable.cpp src/index.cpp)
 target_link_libraries(f2sz zstd::libzstd_shared m)
 
-add_executable(f2sz-index src/f2sz-index.c)
-target_link_libraries(f2sz-index zstd::libzstd_shared m)
+#add_executable(f2sz-index src/f2sz-index.c)
+#arget_link_libraries(f2sz-index zstd::libzstd_shared m)
 
 
 if (CMAKE_BUILD_TYPE STREQUAL Release)

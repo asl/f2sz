@@ -7,6 +7,8 @@
  * file in the root directory of this source tree).
  ****************************************************************** */
 
+#include <string>
+
 #include <fcntl.h>
 #include <getopt.h>
 #include <stdbool.h>
@@ -44,7 +46,6 @@ struct IndexEntry {
   IndexEntry *next;
 };
 
-
 typedef struct {
   IndexEntry *head;
   IndexEntry *tail;
@@ -58,9 +59,9 @@ typedef enum {
 
 typedef struct {
     // input parameters
-    const char *inFilename;
-    char *outFilename;
-    char *idxFilename;
+    const char* inFilename;
+    std::string outFilename;
+    std::string idxFilename;
     uint8_t level;
     size_t minBlockSize;
     bool verbose;
@@ -167,7 +168,7 @@ static void writeSeekTable(Context *ctx) {
 
 static SeekTableEntry *newSeekTableEntry(uint32_t compressedSize,
                                          uint32_t decompressedSize) {
-  SeekTableEntry *e = malloc(sizeof(SeekTableEntry));
+  SeekTableEntry *e = new SeekTableEntry;
   memset(e, 0, sizeof(SeekTableEntry));
   e->compressedSize = compressedSize;
   e->decompressedSize = decompressedSize;
@@ -209,7 +210,7 @@ static void seekTableAdd(Context *ctx, uint64_t compressedSize,
 }
 
 static Context *newContext() {
-  Context *ctx = malloc(sizeof(Context));
+  Context *ctx = new Context;
   memset(ctx, 0, sizeof(Context));
   ctx->level = 3;
   return ctx;
@@ -299,7 +300,7 @@ static void writeIndex(Context *ctx) {
 static IndexEntry *newIndexEntry(StringRef name,
                                  size_t idx,
                                  size_t offset) {
-  IndexEntry *e = malloc(sizeof(IndexEntry));
+  IndexEntry *e = new IndexEntry;
   memset(e, 0, sizeof(IndexEntry));
   e->name = name;
   e->idx = idx;
@@ -344,14 +345,14 @@ static void prepareInput(Context *ctx) {
 }
 
 static void prepareOutput(Context *ctx) {
-  ctx->outFile = fopen(ctx->outFilename, "wb");
+  ctx->outFile = fopen(ctx->outFilename.c_str(), "wb");
   if (!ctx->outFile) {
     fprintf(stderr, "ERROR: Cannot open output file for writing\n");
     exit(1);
   }
 
   if (ctx->doIndex && !ctx->skipExtIndex) {
-    ctx->outIndex = fopen(ctx->idxFilename, "wt");
+    ctx->outIndex = fopen(ctx->idxFilename.c_str(), "wt");
     if (!ctx->outIndex) {
       fprintf(stderr, "ERROR: Cannot open index file for writing\n");
       exit(1);
@@ -411,7 +412,7 @@ static void roundBlockToInput(Block *block, const Context *ctx) {
 // correspondingly. Note that `c` is not included into the block here.
 static uint8_t *advanceUntil(Block *block, Context *ctx, int c) {
     size_t remaining = ctx->inBuff + ctx->inBuffSize - block->buf - block->size;
-    uint8_t *pos = memchr(block->buf + block->size, c, remaining);
+    uint8_t *pos = (uint8_t*)memchr(block->buf + block->size, c, remaining);
     if (pos == NULL) {
         // No more symbols until the end of the input buffer, grab the
         // whole chunk
@@ -498,7 +499,7 @@ static void advanceBlock(Block *block, Context *ctx) {
 
                 // See if there is a comment here
                 size_t hlen = eol - hpos - 1;
-                uint8_t *space = memchr(hpos, ' ', hlen);
+                uint8_t *space = (uint8_t*)memchr(hpos, ' ', hlen);
                 if (space != NULL)
                     hlen = space - hpos - 1;
 
@@ -576,7 +577,7 @@ static void compressFile(Context *ctx) {
 
         ZSTD_inBuffer input = { block.buf, block.size, 0};
         size_t remaining;
-        mode_t mode;
+        ZSTD_EndDirective mode;
         uint64_t compressedSize = 0;
         do {
             ZSTD_outBuffer output = {ctx->outBuff, ctx->outBuffSize, 0};
@@ -606,20 +607,12 @@ static void compressFile(Context *ctx) {
     munmap(ctx->inBuff, ctx->inBuffSize);
 }
 
-static char *getOutFilename(const char *inFilename) {
-  const size_t size = strlen(inFilename) + 5; // .zst + NULL
-  void *const buff = calloc(1, size);
-  strcat(buff, inFilename);
-  strcat(buff, ".zst");
-  return (char *)buff;
+static std::string getOutFilename(std::string_view inFilename) {
+    return std::string(inFilename) + ".zst";
 }
 
-static char *getIndexFilename(const char *outFilename) {
-  const size_t size = strlen(outFilename) + 5; // .zst + NULL
-  void *const buff = calloc(1, size);
-  strcat(buff, outFilename);
-  strcat(buff, ".idx");
-  return (char *)buff;
+static std::string getIndexFilename(std::string_view outFilename) {
+    return std::string(outFilename) + ".idx";
 }
 
 static void version() {
@@ -791,7 +784,7 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  if (ctx->outFilename == NULL)
+  if (ctx->outFilename.empty())
     ctx->outFilename = getOutFilename(ctx->inFilename);
 
   if (ctx->doIndex && ctx->mode != Line && ctx->mode != FASTA) {
@@ -799,18 +792,18 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  if (!overwrite && access(ctx->outFilename, F_OK) == 0) {
+  if (!overwrite && access(ctx->outFilename.c_str(), F_OK) == 0) {
     char ans;
-    fprintf(stderr, "%s already exists. Overwrite? [y/N]: ", ctx->outFilename);
+    fprintf(stderr, "%s already exists. Overwrite? [y/N]: ", ctx->outFilename.c_str());
     int res = scanf(" %c", &ans);
     if (res && ans != 'y') {
       return 0;
     }
   }
 
-  if (!overwrite && access(ctx->outFilename, F_OK) == 0) {
+  if (!overwrite && access(ctx->outFilename.c_str(), F_OK) == 0) {
     char ans;
-    fprintf(stderr, "%s already exists. Overwrite? [y/N]: ", ctx->outFilename);
+    fprintf(stderr, "%s already exists. Overwrite? [y/N]: ", ctx->outFilename.c_str());
     int res = scanf(" %c", &ans);
     if (res && ans != 'y') {
       return 0;
@@ -819,9 +812,9 @@ int main(int argc, char **argv) {
 
   if (ctx->doIndex && !ctx->skipExtIndex) {
     ctx->idxFilename = getIndexFilename(ctx->outFilename);
-    if (!overwrite && access(ctx->idxFilename, F_OK) == 0) {
+    if (!overwrite && access(ctx->idxFilename.c_str(), F_OK) == 0) {
       char ans;
-      fprintf(stderr, "%s already exists. Overwrite? [y/N]: ", ctx->idxFilename);
+      fprintf(stderr, "%s already exists. Overwrite? [y/N]: ", ctx->idxFilename.c_str());
       int res = scanf(" %c", &ans);
       if (res && ans != 'y') {
         return 0;

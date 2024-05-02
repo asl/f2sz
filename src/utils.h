@@ -6,8 +6,7 @@
  * file in the root directory of this source tree).
  ****************************************************************** */
 
-#include <stdbool.h>
-#include <stddef.h>
+#include <cstddef>
 
 bool strEndsWith(const char *str, const char *suf);
 size_t decodeMultiplier(char *arg);

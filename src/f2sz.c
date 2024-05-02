@@ -19,6 +19,8 @@
 #include <unistd.h>
 #include <zstd.h>
 
+#include "index.h"
+#include "seekable.h"
 #include "utils.h"
 
 typedef struct SeekTableEntry SeekTableEntry;
@@ -118,11 +120,6 @@ static void writeLE64(void *dst, uint64_t data) {
     memcpy(dst, &data, sizeof(data));
 #endif
 }
-
-#define ZSTD_seekTableFooterSize 9
-#define ZSTD_SEEKABLE_MAGICNUMBER 0x8F92EAB1
-#define ZSTD_SEEKABLE_MAXFRAMES 0x8000000U
-#define ZSTD_SEEKABLE_MAX_FRAME_DECOMPRESSED_SIZE 0x40000000U
 
 static void writeSeekTable(Context *ctx) {
   uint8_t buf[4];
@@ -264,7 +261,7 @@ static void writeIndex(Context *ctx) {
         frameSize += e->name.len + 1; // Zero terminated
         frameSize += 8 + 8; // idx, offset
     }
-    frameSize += 9; // footer: number of index entriees, reserved byte, magic
+    frameSize += ZSTD_indexTableFooterSize; // footer: number of index entriees, reserved byte, magic
 
     // Frame_Size
     writeLE32(buf, frameSize);
@@ -295,7 +292,7 @@ static void writeIndex(Context *ctx) {
     fwrite(buf, 1, 1, ctx->outFile);
 
     // Index_Magic_Number
-    writeLE32(buf, 0x46494458); // 'FIDX'
+    writeLE32(buf, ZSTD_FIDX_MAGICNUMBER); // 'FIDX'
     fwrite(buf, 4, 1, ctx->outFile);
 }
 

@@ -593,10 +593,10 @@ static void compressFile(Context *ctx) {
         seekTableAdd(ctx, compressedSize, block.size);
     }
 
-    if (!ctx->skipSeekTable)
-        writeSeekTable(ctx);
     if (ctx->doIndex)
         writeIndex(ctx);
+    if (!ctx->skipSeekTable)
+        writeSeekTable(ctx);
 
     ZSTD_freeCCtx(ctx->cctx);
     fclose(ctx->outFile);

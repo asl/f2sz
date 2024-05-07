@@ -2,6 +2,7 @@
 #define _F2SZ_INDEX_H_
 
 #include <string_view>
+#include <string>
 #include <cstdint>
 
 static constexpr unsigned ZSTD_indexTableFooterSize = 9;
@@ -19,10 +20,21 @@ class RecordIndex {
         indexEntries.emplace_back(IndexEntry{name, idx, offset});
     }
     size_t size() const { return indexEntries.size(); }
+    bool read(FILE *inFile, size_t frameSize, bool verbose);
     void write(FILE *outFile, bool verbose = false);
+    void print(FILE *outFile) const;
 
+    auto &operator[](size_t idx) {  return indexEntries[idx]; }
+    const auto &operator[](size_t idx) const {  return indexEntries[idx]; }
+
+    auto &entries() { return indexEntries; };
+    const auto &entries() const { return indexEntries; }
   private:
     std::vector<IndexEntry> indexEntries;
+    // Normally index entries are string views, however, in some cases
+    // (e.g. read from file) we need to own string. Then they are stored in this
+    // cache
+    std::vector<std::string> stringCache;
 };
 
 

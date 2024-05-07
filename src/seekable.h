@@ -23,7 +23,6 @@ struct SeekTableEntry {
     uint32_t decompressedSize;
 };
 
-
 class SeekTable {
   public:
     void add(uint32_t compressedSize, uint32_t decompressedSize) {
@@ -31,7 +30,23 @@ class SeekTable {
     }
 
     size_t size() const { return tableEntries.size(); }
+    bool read(FILE *inFile, size_t frameSize, bool verbose = false);
     void write(FILE *outFile, bool verbose = false);
+    void print(FILE *outFile) const;
+
+    auto &operator[](size_t idx) {  return tableEntries[idx]; }
+    const auto &operator[](size_t idx) const {  return tableEntries[idx]; }
+
+    auto &entries() { return tableEntries; };
+    const auto &entries() const { return tableEntries; }
+
+    size_t decompressedFrameSize(size_t targetFrame) const {
+        return tableEntries.at(targetFrame).decompressedSize;
+    }
+    size_t compressedFrameSize(size_t targetFrame) const {
+        return tableEntries.at(targetFrame).compressedSize;
+    }
+
 
   private:
     std::vector<SeekTableEntry> tableEntries;

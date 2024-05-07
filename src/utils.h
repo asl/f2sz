@@ -25,6 +25,24 @@ static uint32_t readLE32(uint8_t *buf) {
     return result;
 }
 
+static uint64_t readLE64(uint8_t *buf) {
+    uint64_t result;
+    memcpy(&result, buf, sizeof(result));
+
+#if defined(F2SZ_BIG_ENDIAN)
+    result =
+            ((result << 56) & 0xFF00000000000000UL) |
+            ((result << 40) & 0x00FF000000000000UL) |
+            ((result << 24) & 0x0000FF0000000000UL) |
+            ((result <<  8) & 0x000000FF00000000UL) |
+            ((result >>  8) & 0x00000000FF000000UL) |
+            ((result >> 24) & 0x0000000000FF0000UL) |
+            ((result >> 40) & 0x000000000000FF00UL) |
+            ((result >> 56) & 0x00000000000000FFUL);
+#endif
+    return result;
+}
+
 static uint32_t readLE24(uint8_t *buf) {
     return buf[0] |
           (buf[1] << 8) |

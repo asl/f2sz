@@ -387,7 +387,7 @@ static void version() {
       stderr,
       "f2sz version %s\n"
       "Copyright (C) 2020 Marco Martinelli <marco+t2sz@13byte.com>\n"
-      "Copyright (C) 2023 Anton Korobeynikov <anton+t2sz@korobeynikov.info>\n"
+      "Copyright (C) 2023 Anton Korobeynikov <anton+f2sz@korobeynikov.info>\n"
       "This software is distributed under the GPLv3 License\n"
       "THIS SOFTWARE IS PROVIDED \"AS IS\" WITHOUT ANY WARRANTY\n",
       VERSION);

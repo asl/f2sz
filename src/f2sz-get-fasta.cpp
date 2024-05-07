@@ -417,21 +417,28 @@ int main(int argc, char **argv) {
         fprintf(stderr, "Record %zu belongs to frame: %zu\n",
                 recordNum, frameNum);
 
-    std::vector<uint8_t> buf(ctx.table.decompressedFrameSize(frameNum), 0);
+    size_t decompressedSize = ctx.table.decompressedFrameSize(frameNum);
+    std::unique_ptr<uint8_t> buf(new uint8_t[decompressedSize]);
 
     // Decompress the required frame
-    size_t res = decompressFrame(srcFile.get(), ctx, buf.data(), frameNum);
+    size_t res = decompressFrame(srcFile.get(), ctx, buf.get(), frameNum);
     if (ZSTD_isError(res)) {
         fprintf(stderr, "ERROR: decompressing frame %zu failed, zstd error code: %zu\n",
                 frameNum, -res);
         return res;
     }
 
+    if (res != decompressedSize) {
+        fprintf(stderr, "ERROR: unexpected decompressed frame size %zu vs %zu\n",
+                res, decompressedSize);
+        return -3;
+    }
+
     // Look for the record in question
-    auto str = getRecord(buf.data(), buf.size(), recordNum - ctx.index[frameNum].idx);
+    auto str = getRecord(buf.get(), decompressedSize, recordNum - ctx.index[frameNum].idx);
     if (str.empty()) {
         fprintf(stderr, "ERROR: cannot find record %zu\n", recordNum + 1);
-        return -3;
+        return -4;
     }
 
     fwrite(str.data(), 1, str.size(), stdout);

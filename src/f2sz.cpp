@@ -53,10 +53,12 @@ typedef struct {
     void *outBuff;
 
     // output index
+    FILE *outIndex;
     RecordIndex blockIndex;
     RecordIndex recordIndex;
     bool doIndex;
     bool fullIndex;
+    bool skipExtIndex;
 
     // compression context
     ZSTD_CCtx *cctx;
@@ -128,6 +130,14 @@ static void prepareOutput(Context *ctx) {
   if (!ctx->outFile) {
     fprintf(stderr, "ERROR: Cannot open output file for writing\n");
     exit(1);
+  }
+
+  if (ctx->doIndex && !ctx->skipExtIndex) {
+    ctx->outIndex = fopen(ctx->idxFilename.c_str(), "wt");
+    if (!ctx->outIndex) {
+      fprintf(stderr, "ERROR: Cannot open index file for writing\n");
+      exit(1);
+    }
   }
 
   ctx->outBuffSize = ZSTD_CStreamOutSize();
@@ -372,6 +382,19 @@ static void compressFile(Context *ctx) {
     if (!ctx->skipSeekTable)
         ctx->seekTable.write(ctx->outFile, ctx->verbose);
 
+    // Write index to separate text index file
+    if (ctx->outIndex) {
+        for (const auto &entry : ctx->blockIndex.entries()) {
+            if (!entry.name.empty()) {
+                fwrite(entry.name.data(), entry.name.size(), 1, ctx->outIndex);
+                fputc('\t', ctx->outIndex);
+            }
+
+            fprintf(ctx->outIndex,"%zu\t", entry.idx);
+            fprintf(ctx->outIndex, "%zu\n", entry.offset);
+        }
+    }
+
     ZSTD_freeCCtx(ctx->cctx);
     fclose(ctx->outFile);
     free(ctx->outBuff);
@@ -380,6 +403,10 @@ static void compressFile(Context *ctx) {
 
 static std::string getOutFilename(std::string_view inFilename) {
     return std::string(inFilename) + ".zst";
+}
+
+static std::string getIndexFilename(std::string_view outFilename) {
+    return std::string(outFilename) + ".idx";
 }
 
 static void version() {
@@ -519,6 +546,9 @@ int main(int argc, char **argv) {
     case 'i':
       ctx->doIndex = true;
       break;
+    case 'J':
+      ctx->skipExtIndex = true;
+      break;
     case 'v':
       ctx->verbose = true;
       break;
@@ -571,6 +601,18 @@ int main(int argc, char **argv) {
     int res = scanf(" %c", &ans);
     if (res && ans != 'y') {
       return 0;
+    }
+  }
+
+  if (ctx->doIndex && !ctx->skipExtIndex) {
+    ctx->idxFilename = getIndexFilename(ctx->outFilename);
+    if (!overwrite && access(ctx->idxFilename.c_str(), F_OK) == 0) {
+      char ans;
+      fprintf(stderr, "%s already exists. Overwrite? [y/N]: ", ctx->idxFilename.c_str());
+      int res = scanf(" %c", &ans);
+      if (res && ans != 'y') {
+        return 0;
+      }
     }
   }
 

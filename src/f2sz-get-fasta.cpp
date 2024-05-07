@@ -12,6 +12,8 @@
 
 #include <algorithm>
 #include <memory>
+#include <unordered_set>
+
 #include <cstdio>
 #include <cstdint>
 #include <cstdlib>
@@ -361,19 +363,21 @@ static void usage(const char *name, const char *fmt, ...)  {
 
 int main(int argc, char **argv) {
     Context ctx;
-    size_t recordNum;
+    std::unordered_set<size_t> records;
 
     char *executable = argv[0];
     int ch;
     while ((ch = getopt(argc, argv, "i:vVh")) != -1) {
         switch (ch) {
-        case 'i':
-            recordNum = std::stoul(optarg);
+        case 'i': {
+            size_t recordNum = std::stoul(optarg);
             if (recordNum < 1)
                 usage(executable, "ERROR: Invalid record number %zu, must be greater than 0",
                       recordNum);
             recordNum -= 1; // Convert to zero-based
+            records.insert(recordNum);
             break;
+        }
         case 'v':
             ctx.verbose = true;
             break;
@@ -412,36 +416,60 @@ int main(int argc, char **argv) {
     if (enumFrames(srcFile.get(), ctx) != FrameError::success)
         return -1;
 
-    size_t frameNum = recordToFrameNum(ctx, recordNum);
-    if (ctx.verbose)
-        fprintf(stderr, "Record %zu belongs to frame: %zu\n",
-                recordNum, frameNum);
-
-    size_t decompressedSize = ctx.table.decompressedFrameSize(frameNum);
-    std::unique_ptr<uint8_t> buf(new uint8_t[decompressedSize]);
-
-    // Decompress the required frame
-    size_t res = decompressFrame(srcFile.get(), ctx, buf.get(), frameNum);
-    if (ZSTD_isError(res)) {
-        fprintf(stderr, "ERROR: decompressing frame %zu failed, zstd error code: %zu\n",
-                frameNum, -res);
-        return res;
+    // Collect all the frames containing the records
+    std::vector<std::pair<size_t, size_t>> recordFrames;
+    for (size_t recordNum : records) {
+        size_t frameNum = recordToFrameNum(ctx, recordNum);
+        if (ctx.verbose)
+            fprintf(stderr, "Record %zu belongs to frame: %zu\n",
+                    recordNum, frameNum);
+        recordFrames.emplace_back(frameNum, recordNum);
     }
 
-    if (res != decompressedSize) {
-        fprintf(stderr, "ERROR: unexpected decompressed frame size %zu vs %zu\n",
-                res, decompressedSize);
-        return -3;
-    }
+    // Sort by frame number
+    std::sort(recordFrames.begin(), recordFrames.end(),
+              [](const auto &lhs, const auto &rhs) -> bool {
+                  return lhs.first < rhs.first;
+              });
 
-    // Look for the record in question
-    auto str = getRecord(buf.get(), decompressedSize, recordNum - ctx.index[frameNum].idx);
-    if (str.empty()) {
-        fprintf(stderr, "ERROR: cannot find record %zu\n", recordNum + 1);
-        return -4;
-    }
+    size_t prevFrame = size_t(-1);
+    std::vector<uint8_t> buf;
+    for (auto [frameNum, recordNum] : recordFrames) {
+        // New frame, decompress
+        if (prevFrame != frameNum) {
+            size_t decompressedSize = ctx.table.decompressedFrameSize(frameNum);
+            buf.resize(decompressedSize);
 
-    fwrite(str.data(), 1, str.size(), stdout);
+            // Decompress the required frame
+            if (ctx.verbose)
+                fprintf(stderr, "Decompressing frame %zu, decompressed size: %zu\n",
+                        frameNum, decompressedSize);
+
+            size_t res = decompressFrame(srcFile.get(), ctx, buf.data(), frameNum);
+            if (ZSTD_isError(res)) {
+                fprintf(stderr, "ERROR: decompressing frame %zu failed, zstd error code: %zu\n",
+                        frameNum, -res);
+                return res;
+            }
+
+            if (res != decompressedSize) {
+                fprintf(stderr, "ERROR: unexpected decompressed frame size %zu vs %zu\n",
+                        res, decompressedSize);
+                return -3;
+            }
+
+            prevFrame = frameNum;
+        }
+
+        // Look for the record in question
+        auto str = getRecord(buf.data(), buf.size(), recordNum - ctx.index[frameNum].idx);
+        if (str.empty()) {
+            fprintf(stderr, "ERROR: cannot find record %zu\n", recordNum + 1);
+            return -4;
+        }
+
+        fwrite(str.data(), 1, str.size(), stdout);
+    }
 
     return 0;
 }

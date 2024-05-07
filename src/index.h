@@ -3,6 +3,7 @@
 
 #include <string_view>
 #include <string>
+#include <vector>
 #include <cstdint>
 
 static constexpr unsigned ZSTD_indexTableFooterSize = 9;

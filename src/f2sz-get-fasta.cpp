@@ -11,12 +11,12 @@
 #include "utils.h"
 
 #include <algorithm>
-#include <memory.h>
 #include <memory>
-#include <stdbool.h>
-#include <stdio.h>
-#include <stdint.h>
-#include <stdlib.h>
+#include <cstdio>
+#include <cstdint>
+#include <cstdlib>
+#include <cstdarg>
+#include <memory.h>
 #include <unistd.h>
 #define ZSTD_STATIC_LINKING_ONLY
 #include <zstd.h>

@@ -14,6 +14,7 @@
 #include <memory>
 #include <unordered_set>
 
+#include <cstring>
 #include <cstdio>
 #include <cstdint>
 #include <cstdlib>
@@ -141,6 +142,11 @@ size_t decompressFrame(FILE *srcFile, Context &ctx, uint8_t *dst, unsigned targe
 
 FrameError enumFrames(FILE *srcFile, Context &ctx) {
     ctx.numActualFrames = 0, ctx.numSkippableFrames = 0;
+    ctx.table.clear();
+    ctx.index.clear();
+
+    int res = fseek(srcFile, 0, SEEK_SET);
+    ERROR_IF(res != 0, FrameError::frame_error, "ERROR: could not seek to the beginning of the file");
 
     for ( ; ; ) {
         uint8_t headerBuffer[ZSTD_FRAMEHEADERSIZE_MAX];
@@ -238,7 +244,7 @@ FrameError enumFrames(FILE *srcFile, Context &ctx) {
                         ERROR_IF(!seekRead, FrameError::frame_error, "ERROR: invalid record index format");
                     } else {
                         if (ctx.verbose)
-                            fprintf(stderr, "WARN: unknown magic value %08x:\n", magicNumber);
+                            fprintf(stderr, "WARN: unknown magic value %08x:\n", frameMagic);
                     }
                 }
             }  // something unknown
@@ -271,6 +277,246 @@ FrameError enumFrames(FILE *srcFile, Context &ctx) {
         ctx.frameDecompressedOffsets.push_back(ctx.frameDecompressedOffsets.back() + entry.decompressedSize);
 
     return FrameError::success;
+}
+
+FrameError tryFindIndices(FILE *srcFile, Context &ctx) {
+    ctx.numActualFrames = 0, ctx.numSkippableFrames = 0;
+    ctx.table.clear();
+    ctx.index.clear();
+
+    // The index frames should be the last two ones in the file. Find them.
+    bool foundSeekTable = false, foundRecordIndex = false;
+
+    int res = fseek(srcFile, 0, SEEK_END);
+    ERROR_IF(res != 0, FrameError::frame_error, "ERROR: could not seek to find the index");
+
+    auto readOneIndex = [&]() {
+        uint8_t magicBuffer[4];
+        memset(magicBuffer, 0, sizeof(magicBuffer));
+
+        int res = fseek(srcFile, -4, SEEK_CUR);
+        ERROR_IF(res != 0, FrameError::frame_error, "ERROR: could not seek to find the index");
+
+
+        size_t numMagicBytesRead = fread(magicBuffer, 1, 4, srcFile);
+        ERROR_IF(numMagicBytesRead != 4,
+                 FrameError::frame_error, "Error while reading frame magic value");
+        const uint32_t frameMagic = readLE32(magicBuffer);
+
+        if (ctx.verbose)
+            fprintf(stderr, "Checking frame magic: %08X\n", frameMagic);
+
+        if (frameMagic == ZSTD_SEEKABLE_MAGICNUMBER) {
+            uint8_t headerBuffer[8];
+            uint8_t footerBuffer[ZSTD_seekTableFooterSize];
+            memset(footerBuffer, 0, sizeof(footerBuffer));
+            memset(headerBuffer, 0, sizeof(headerBuffer));
+
+            // Read the footer and determine the frame size
+            int res = fseek(srcFile, -(long)ZSTD_seekTableFooterSize, SEEK_CUR);
+            ERROR_IF(res != 0, FrameError::frame_error, "ERROR: could not seek to find the index");
+
+            size_t numFooterBytesRead = fread(footerBuffer, 1, ZSTD_seekTableFooterSize, srcFile);
+            ERROR_IF(numFooterBytesRead != ZSTD_seekTableFooterSize,
+                     FrameError::frame_error, "Error while reading seekable frame footer");
+
+            // Depending on whether CRC is used or not, each entry is 12 or 8 bytes.
+            uint32_t numberOfEntries = readLE32(footerBuffer);
+            unsigned entrySize = footerBuffer[4] & 0x80 ? 12 : 8;
+
+            size_t frameSize = entrySize * numberOfEntries + ZSTD_seekTableFooterSize;
+
+            // Final sanity check: find the frame header and verify that it is correct:
+            //  - Has proper skipable zstd frame magic
+            //  - Has proper frame size
+            res = fseek(srcFile, -(long)(frameSize + 4 + 4), SEEK_CUR);
+            ERROR_IF(res != 0, FrameError::frame_error, "ERROR: could not seek to find the index header");
+
+            size_t numHeaderBytesRead = fread(headerBuffer, 1, 8, srcFile);
+            ERROR_IF(numHeaderBytesRead != 8,
+                     FrameError::frame_error, "Error while reading seekable frame header");
+
+            const uint32_t magicNumber = readLE32(headerBuffer);
+            ERROR_IF((magicNumber & ZSTD_MAGIC_SKIPPABLE_MASK) != ZSTD_MAGIC_SKIPPABLE_START,
+                     FrameError::not_zstd, "ERROR: not a zstd frame");
+
+            const uint32_t fframeSize = readLE32(headerBuffer + 4);
+            ERROR_IF(frameSize != fframeSize,
+                     FrameError::not_zstd, "ERROR: not a zstd frame");
+
+            bool seekRead = ctx.table.read(srcFile, frameSize, ctx.verbose);
+            ERROR_IF(!seekRead, FrameError::frame_error, "ERROR: invalid seek table format");
+
+            res = fseek(srcFile, -(long)(frameSize + 4 + 4), SEEK_CUR);
+            ERROR_IF(res != 0, FrameError::frame_error, "ERROR: could not seek to find the index");
+
+            foundSeekTable = true;
+        } else if (frameMagic == ZSTD_FIDX_MAGICNUMBER) {
+            uint8_t footerBuffer[ZSTD_indexTableFooterSize];
+            memset(footerBuffer, 0, sizeof(footerBuffer));
+
+            // Read the footer and determine the frame size
+            int res = fseek(srcFile, -(long)ZSTD_indexTableFooterSize, SEEK_CUR);
+            ERROR_IF(res != 0, FrameError::frame_error, "ERROR: could not seek to find the index");
+
+            size_t numFooterBytesRead = fread(footerBuffer, 1, ZSTD_indexTableFooterSize, srcFile);
+            ERROR_IF(numFooterBytesRead != ZSTD_indexTableFooterSize,
+                     FrameError::frame_error, "Error while reading index frame footer");
+
+            // If frame size is stored, our life is easy
+            size_t frameSize = 0;
+            bool isFrameSize = footerBuffer[4] & 0x1;
+            if (isFrameSize) {
+                uint8_t headerBuffer[8];
+
+                frameSize = readLE32(footerBuffer);
+
+                int res = fseek(srcFile, -(long)(frameSize + 4 + 4), SEEK_CUR);
+                ERROR_IF(res != 0, FrameError::frame_error, "ERROR: could not seek to find the index");
+
+                // Final sanity check: find the frame header and verify that it is correct:
+                //  - Has proper skipable zstd frame magic
+                //  - Has proper frame size
+                size_t numHeaderBytesRead = fread(headerBuffer, 1, 8, srcFile);
+                ERROR_IF(numHeaderBytesRead != 8,
+                         FrameError::frame_error, "Error while reading seekable frame header");
+
+                const uint32_t magicNumber = readLE32(headerBuffer);
+                ERROR_IF((magicNumber & ZSTD_MAGIC_SKIPPABLE_MASK) != ZSTD_MAGIC_SKIPPABLE_START,
+                         FrameError::not_zstd, "ERROR: not a zstd frame");
+
+                const uint32_t fframeSize = readLE32(headerBuffer + 4);
+                ERROR_IF(frameSize != fframeSize,
+                         FrameError::not_zstd, "ERROR: not a zstd frame");
+            } else {
+                // Otherwise, only # of entries is stored, but each entry is of
+                // variable length :( This was terrible design flaw of early f2sz
+                size_t numEntries = readLE32(footerBuffer);
+                frameSize = ZSTD_indexTableFooterSize;
+                // Each entry is at least 17 bytes, so it is always safe to read by 16 bytes
+                // We apply the following heuristics:
+                //  - We look for seekable frame magic (5F 2A 4D 18) and track tentative frame size.
+                //  - If both are correct we decide that everything if fine
+                //  - In the case we failed, well, we'd do the full scan later
+                int res = fseek(srcFile, -(long)ZSTD_indexTableFooterSize - 16, SEEK_CUR);
+                ERROR_IF(res != 0, FrameError::frame_error, "ERROR: could not seek to find the index");
+                bool frameStartFound = false;
+                while (!frameStartFound) {
+                    uint8_t headerBuffer[16];
+
+                    size_t numHeaderBytesRead = fread(headerBuffer, 1, sizeof(headerBuffer), srcFile);
+                    ERROR_IF(numHeaderBytesRead != sizeof(headerBuffer),
+                             FrameError::frame_error, "Error while reading seekable frame header");
+
+                    // See if there is 0x5F in the header buffer
+                    uint8_t *pos5f = (uint8_t*)memchr(headerBuffer, 0x5f, sizeof(headerBuffer));
+                    while (pos5f != NULL) {
+                        size_t off5f = pos5f - headerBuffer;
+                        uint32_t magicNumber = 0;
+
+                        // Can we directly read these 4 bytes starting with 0x5F?
+                        if (off5f + 3 < sizeof(headerBuffer)) {
+                            magicNumber = readLE32(pos5f);
+                        } else {
+                            size_t read = sizeof(headerBuffer) - off5f;
+                            size_t remain = 4 - read;
+                            memmove(headerBuffer, headerBuffer + off5f, read);
+
+                            size_t numHeaderBytesRead = fread(headerBuffer + read, 1, remain, srcFile);
+                            ERROR_IF(numHeaderBytesRead != remain,
+                                     FrameError::frame_error, "Error while reading seekable frame header");
+                            magicNumber = readLE32(headerBuffer);
+
+                            int res = fseek(srcFile, -(long)remain, SEEK_CUR);
+                            ERROR_IF(res != 0, FrameError::frame_error, "ERROR: could not seek to find the index");
+                        }
+
+                        if ((magicNumber & ZSTD_MAGIC_SKIPPABLE_MASK) == ZSTD_MAGIC_SKIPPABLE_START) {
+                            uint8_t fszBuffer[4];
+                            if (ctx.verbose)
+                                fprintf(stderr, "Found skippable frame magic at buffer offset: %zu, frame size: %zu\n", off5f, frameSize - off5f + 8);
+
+                            size_t read = sizeof(headerBuffer) - off5f;
+                            int res = fseek(srcFile, -(long)read + 4, SEEK_CUR);
+                            ERROR_IF(res != 0, FrameError::frame_error, "ERROR: could not seek to find the index");
+
+                            size_t numFrameSizeBytesRead = fread(fszBuffer, 1, sizeof(fszBuffer), srcFile);
+                            ERROR_IF(numFrameSizeBytesRead != sizeof(fszBuffer),
+                                     FrameError::frame_error, "Error while reading seekable frame header");
+
+                            size_t fframeSize = readLE32(fszBuffer);
+                            if (fframeSize == frameSize - off5f + 8) {
+                                frameSize = fframeSize;
+                                frameStartFound = true;
+                                break; // exiting inner loop (while (pos5f != NULL))
+                            } else {
+                                if (ctx.verbose)
+                                    fprintf(stderr, "Frame size does not match %zu vs %zu, continue search\n", fframeSize, frameSize - off5f + 8);
+                                res = fseek(srcFile, (long)(8 - read), SEEK_CUR);
+                                ERROR_IF(res != 0, FrameError::frame_error, "ERROR: could not seek to find the index");
+                            }
+
+                        }
+                        pos5f = (uint8_t*)memchr(pos5f + 1, 0x5f, sizeof(headerBuffer) - off5f - 1);
+                    }
+
+                    if (!frameStartFound) {
+                        int res = fseek(srcFile, -2*sizeof(headerBuffer), SEEK_CUR);
+                        ERROR_IF(res != 0, FrameError::frame_error, "ERROR: could not seek to find the index");
+                        frameSize += 16;
+                    }
+                }
+            }
+
+            bool seekRead = ctx.index.read(srcFile, frameSize, ctx.verbose);
+            ERROR_IF(!seekRead, FrameError::frame_error, "ERROR: invalid record index format");
+
+            res = fseek(srcFile, -(long)(frameSize + 4 + 4), SEEK_CUR);
+            ERROR_IF(res != 0, FrameError::frame_error, "ERROR: could not seek to find the index");
+
+            foundRecordIndex = true;
+        } else {
+            if (ctx.verbose)
+                fprintf(stderr, "WARN: unknown magic value %08x:\n", frameMagic);
+        }
+
+        return FrameError::success;
+    };
+
+    {
+        auto res = readOneIndex();
+        if (res != FrameError::success)
+            return res;
+    }
+
+    {
+        auto res = readOneIndex();
+        if (res != FrameError::success)
+            return res;
+    }
+
+    if (foundRecordIndex && foundSeekTable) {
+        // Final sanity checks:
+        //  - Both record index and seek table filled in
+        //  - Both have same sizes
+        ERROR_IF(ctx.table.size() != ctx.index.size(), FrameError::file_error,
+                 "ERROR: sizes of record index and seek table do not match");
+
+        // Transform frame sizes to frame offsets
+        ctx.frameCompressedOffsets.reserve(ctx.table.size() + 1);
+        ctx.frameCompressedOffsets.push_back(0);
+        for (const auto &entry : ctx.table.entries())
+            ctx.frameCompressedOffsets.push_back(ctx.frameCompressedOffsets.back() + entry.compressedSize);
+
+        ctx.frameDecompressedOffsets.reserve(ctx.table.size() + 1);
+        ctx.frameDecompressedOffsets.push_back(0);
+        for (const auto &entry : ctx.table.entries())
+            ctx.frameDecompressedOffsets.push_back(ctx.frameDecompressedOffsets.back() + entry.decompressedSize);
+
+        return FrameError::success;
+    }
+
+    return FrameError::file_error;
 }
 
 std::string_view getRecord(uint8_t *buf, size_t len, size_t recordNum) {
@@ -364,10 +610,11 @@ static void usage(const char *name, const char *fmt, ...)  {
 int main(int argc, char **argv) {
     Context ctx;
     std::unordered_set<size_t> records;
+    bool fullScan = false;
 
     char *executable = argv[0];
     int ch;
-    while ((ch = getopt(argc, argv, "i:vVh")) != -1) {
+    while ((ch = getopt(argc, argv, "i:svVh")) != -1) {
         switch (ch) {
         case 'i': {
             size_t recordNum = std::stoul(optarg);
@@ -378,6 +625,9 @@ int main(int argc, char **argv) {
             records.insert(recordNum);
             break;
         }
+        case 's':
+            fullScan = true;
+            break;
         case 'v':
             ctx.verbose = true;
             break;
@@ -412,9 +662,19 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    // Enumerate the frames in the input file, filling the indices
-    if (enumFrames(srcFile.get(), ctx) != FrameError::success)
-        return -1;
+    if (fullScan) {
+        // Enumerate the frames in the input file, filling the indices
+        if (enumFrames(srcFile.get(), ctx) != FrameError::success)
+            return -1;
+    } else {
+        if (tryFindIndices(srcFile.get(), ctx) != FrameError::success) {
+            if (ctx.verbose)
+                fprintf(stderr, "Failed to find indices fast, fallback to full frame scan\n");
+
+            if (0 && enumFrames(srcFile.get(), ctx) != FrameError::success)
+                return -1;
+        }
+    }
 
     // Collect all the frames containing the records
     std::vector<std::pair<size_t, size_t>> recordFrames;
@@ -433,19 +693,21 @@ int main(int argc, char **argv) {
               });
 
     size_t prevFrame = size_t(-1);
-    std::vector<uint8_t> buf;
+
+    uint8_t *buf = NULL;
     for (auto [frameNum, recordNum] : recordFrames) {
+        size_t decompressedSize = 0;
         // New frame, decompress
         if (prevFrame != frameNum) {
-            size_t decompressedSize = ctx.table.decompressedFrameSize(frameNum);
-            buf.resize(decompressedSize);
+            decompressedSize = ctx.table.decompressedFrameSize(frameNum);
+            buf = (uint8_t*)realloc(buf, decompressedSize);
 
             // Decompress the required frame
             if (ctx.verbose)
                 fprintf(stderr, "Decompressing frame %zu, decompressed size: %zu\n",
                         frameNum, decompressedSize);
 
-            size_t res = decompressFrame(srcFile.get(), ctx, buf.data(), frameNum);
+            size_t res = decompressFrame(srcFile.get(), ctx, buf, frameNum);
             if (ZSTD_isError(res)) {
                 fprintf(stderr, "ERROR: decompressing frame %zu failed, zstd error code: %zu\n",
                         frameNum, -res);
@@ -462,7 +724,7 @@ int main(int argc, char **argv) {
         }
 
         // Look for the record in question
-        auto str = getRecord(buf.data(), buf.size(), recordNum - ctx.index[frameNum].idx);
+        auto str = getRecord(buf, decompressedSize, recordNum - ctx.index[frameNum].idx);
         if (str.empty()) {
             fprintf(stderr, "ERROR: cannot find record %zu\n", recordNum + 1);
             return -4;
@@ -470,6 +732,8 @@ int main(int argc, char **argv) {
 
         fwrite(str.data(), 1, str.size(), stdout);
     }
+
+    free(buf);
 
     return 0;
 }

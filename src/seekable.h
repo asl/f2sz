@@ -47,6 +47,9 @@ class SeekTable {
         return tableEntries.at(targetFrame).compressedSize;
     }
 
+    void clear() {
+        tableEntries.clear();
+    }
 
   private:
     std::vector<SeekTableEntry> tableEntries;

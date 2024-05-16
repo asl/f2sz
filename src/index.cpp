@@ -14,6 +14,7 @@
 #include <cstdio>
 #include <cstdint>
 
+#include <string_view>
 #include <zstd.h>
 
 void RecordIndex::print(FILE *outFile) const {
@@ -30,46 +31,56 @@ void RecordIndex::print(FILE *outFile) const {
 }
 
 bool RecordIndex::read(FILE *inFile, size_t frameSize, bool verbose) {
-    // We need to grab the # of entries to read from the end of the frame as
-    // entries have variable length
+    uint8_t footerBuffer[ZSTD_indexTableFooterSize];
+
     if (frameSize < ZSTD_indexTableFooterSize) {
         if (verbose)
             fprintf(stderr, "ERROR: too small index table frame\n");
         return false;
     }
 
-    frameSize -= ZSTD_indexTableFooterSize;
-
-    if (fseek(inFile, frameSize, SEEK_CUR) != 0) {
+    if (fseek(inFile, frameSize -  ZSTD_indexTableFooterSize, SEEK_CUR) != 0) {
         if (verbose)
-            fprintf(stderr, "1 ERROR: failed to read index table\n");
+            fprintf(stderr, "ERROR: failed to read index table\n");
         return false;
     }
 
-    uint8_t buf[16];
-    if (fread(buf, 1, 4, inFile) != 4) {
+    size_t numFooterBytesRead = fread(footerBuffer, 1, sizeof(footerBuffer), inFile);
+    if (numFooterBytesRead != ZSTD_indexTableFooterSize) {
         if (verbose)
-            fprintf(stderr, "2 ERROR: failed to read index table\n");
+            fprintf(stderr, "ERROR: failed to read index table footer");
         return false;
     }
 
-    uint32_t numEntries = readLE32(buf);
-    if (fseek(inFile, -frameSize-4, SEEK_CUR) != 0) {
+    if (footerBuffer[4] & 0x1) {
+        uint32_t fframeSize = readLE32(footerBuffer);
+        if (fframeSize != frameSize) {
+            if (verbose)
+                fprintf(stderr, "ERROR: invalid index table size");
+            return false;
+        }
+    }
+
+    if (fseek(inFile, -(long)frameSize, SEEK_CUR) != 0) {
         if (verbose)
-            fprintf(stderr, "1 ERROR: failed to read index table\n");
+            fprintf(stderr, "ERROR: failed to read index table\n");
         return false;
     }
 
-    for (uint32_t i = 0; i < numEntries; ++i) {
+    size_t framePos = 0;
+    while (framePos < frameSize - ZSTD_indexTableFooterSize) {
+        uint8_t buf[16];
         std::string entryName;
         while (true) {
             // Read a single entry. It is always safe to read 16 bytes as each entry
             // is at least 17 bytes long
-            if (fread(buf, 1, 16, inFile) != 16) {
+            size_t numBytesRead = fread(buf, 1, sizeof(buf), inFile);
+            if (numBytesRead != sizeof(buf)) {
                 if (verbose)
-                    fprintf(stderr, "3 ERROR: failed to read index table\n");
+                    fprintf(stderr, "ERROR: failed to read index table\n");
                 return false;
             }
+            framePos += numBytesRead;
 
             uint8_t *nullPos = (uint8_t*)memchr(buf, 0, sizeof(buf));
             if (nullPos == NULL) {
@@ -82,27 +93,30 @@ bool RecordIndex::read(FILE *inFile, size_t frameSize, bool verbose) {
             // null terminator found in buffer, append chunk and read the
             // remaining pieces
             entryName.append((char*)buf, nullPos - buf);
-            size_t chunkLen = buf + 16 - nullPos - 1;
+            size_t chunkLen = buf + sizeof(buf) - nullPos - 1;
 
             memmove(buf, nullPos + 1, chunkLen);
-            if (fread(buf + chunkLen, 1, 16 - chunkLen, inFile) != 16 - chunkLen) {
+            numBytesRead = fread(buf + chunkLen, 1, sizeof(buf) - chunkLen, inFile);
+            if (numBytesRead != sizeof(buf) - chunkLen) {
                 if (verbose)
-                    fprintf(stderr, "4 ERROR: failed to read index table entry\n");
+                    fprintf(stderr, "ERROR: failed to read index table entry\n");
                 return false;
             }
+            framePos += numBytesRead;
 
             uint64_t idx = readLE64(buf);
             uint64_t off = readLE64(buf + 8);
-            stringCache.emplace_back(std::move(entryName));
+            char *str = strdup(entryName.c_str());
+            stringCache.emplace_back(str, free);
 
-            add(stringCache.back(), idx, off);
+            add({str, entryName.size()}, idx, off);
             break;
         }
     }
 
     if (fseek(inFile, ZSTD_indexTableFooterSize, SEEK_CUR) != 0) {
         if (verbose)
-            fprintf(stderr, "5 ERROR: failed to read record index\n");
+            fprintf(stderr, "ERROR: failed to read record index\n");
         return false;
     }
 

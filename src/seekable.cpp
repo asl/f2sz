@@ -4,32 +4,59 @@
  *
  * This source code is licensed under the GPLv3 (found in the LICENSE
  * file in the root directory of this source tree).
- ****************************************************************** */
+ ********************************************************************/
 
 #include "seekable.h"
 #include "utils.h"
-#include <zstd.h>
+#include <cstdio>
 #include <cstdint>
+#include <zstd.h>
 
 bool SeekTable::read(FILE *inFile, size_t frameSize, bool verbose) {
+    uint8_t footerBuffer[ZSTD_seekTableFooterSize];
+
     if (frameSize < ZSTD_seekTableFooterSize) {
         if (verbose)
             fprintf(stderr, "ERROR: too small seek table frame\n");
         return false;
     }
 
-    frameSize -= ZSTD_seekTableFooterSize;
-    if (frameSize % 8) {
+    // Determine the entry size
+    int res = fseek(inFile, frameSize - ZSTD_seekTableFooterSize, SEEK_CUR);
+    if (res != 0) {
+        if (verbose)
+            fprintf(stderr, "ERROR: failed to read seek table entry");
+        return false;
+    }
+
+    size_t numFooterBytesRead = fread(footerBuffer, 1, sizeof(footerBuffer), inFile);
+    if (numFooterBytesRead != ZSTD_seekTableFooterSize) {
+        if (verbose)
+            fprintf(stderr, "ERROR: failed to read seek table footer");
+        return false;
+    }
+
+    unsigned entrySize = footerBuffer[4] & 0x80 ? 12 : 8;
+    uint32_t numEntries = readLE32(footerBuffer);
+    size_t expectedFrameSize = entrySize * numEntries + ZSTD_seekTableFooterSize;
+
+    if (frameSize != expectedFrameSize) {
         if (verbose)
             fprintf(stderr, "ERROR: seek table frame size invalid\n");
         return false;
     }
 
-    size_t numEntries = frameSize / 8;
-    uint8_t buf[8];
+    res = fseek(inFile, -(long)frameSize, SEEK_CUR);
+    if (res != 0) {
+        if (verbose)
+            fprintf(stderr, "ERROR: failed to read seek table entry");
+        return false;
+    }
+
+    uint8_t buf[12];
     for (size_t i = 0; i < numEntries; ++i) {
-        int res = fread(buf, 1, 8, inFile);
-        if (res != 8) {
+        int res = fread(buf, 1, entrySize, inFile);
+        if (res != entrySize) {
             if (verbose)
                 fprintf(stderr, "ERROR: failed to read seek table entry");
             return false;
@@ -37,7 +64,7 @@ bool SeekTable::read(FILE *inFile, size_t frameSize, bool verbose) {
         add(readLE32(buf), readLE32(buf + 4));
     }
 
-    int res = fread(buf, 1, 4, inFile);
+    res = fread(buf, 1, 4, inFile);
     if (res != 4) {
         if (verbose)
             fprintf(stderr, "ERROR: failed to read seek table entry");

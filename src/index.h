@@ -30,12 +30,19 @@ class RecordIndex {
 
     auto &entries() { return indexEntries; };
     const auto &entries() const { return indexEntries; }
+
+    void clear() {
+        indexEntries.clear();
+        stringCache.clear();
+    }
+
   private:
     std::vector<IndexEntry> indexEntries;
     // Normally index entries are string views, however, in some cases
     // (e.g. read from file) we need to own string. Then they are stored in this
-    // cache
-    std::vector<std::string> stringCache;
+    // cache. We cannot use std::string here as due to SSO their locations
+    // could change
+    std::vector<std::unique_ptr<char, decltype(&std::free)>> stringCache;
 };
 
 

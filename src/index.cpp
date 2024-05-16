@@ -147,12 +147,12 @@ void RecordIndex::write(FILE *outFile, bool verbose) {
     }
 
     // Index_Table_Footer
-    // Number_Of_Entries
-    writeLE32(buf, indexEntries.size());
+    // Frame_Size
+    writeLE32(buf, frameSize);
     fwrite(buf, 4, 1, outFile);
 
-    // Index_Table_Descriptor (reserved for later)
-    buf[0] = 0;
+    // Index_Table_Descriptor
+    buf[0] = 0 | 1;
     fwrite(buf, 1, 1, outFile);
 
     // Index_Magic_Number

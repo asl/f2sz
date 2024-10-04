@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 #include <cstdint>
+#include <memory>
 
 static constexpr unsigned ZSTD_indexTableFooterSize = 9;
 static constexpr uint32_t ZSTD_FIDX_MAGICNUMBER = 0x46494458; // 'FIDX'
